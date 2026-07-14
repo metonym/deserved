@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>spa</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <h1>spa</h1>
+    <p>
+      <a href="/">site home</a> ·
+      <a href="/app/" data-link>spa home</a> ·
+      <a href="/app/settings" data-link>settings</a> ·
+      <a href="/app/profile" data-link>profile</a>
+    </p>
+    <div id="view"></div>
+    <script>
+      const routes = {
+        "/app": "spa home",
+        "/app/": "spa home",
+        "/app/settings": "settings — needs --spa on refresh",
+        "/app/profile": "profile — needs --spa on refresh",
+      }
+      const view = document.getElementById("view")
+      function render() {
+        const path = location.pathname
+        view.textContent = routes[path] ?? `no route: ${path}`
+      }
+      document.addEventListener("click", (e) => {
+        const a = e.target.closest("a[data-link]")
+        if (!a) return
+        e.preventDefault()
+        history.pushState(null, "", a.getAttribute("href"))
+        render()
+      })
+      window.addEventListener("popstate", render)
+      render()
+    </script>
+  </body>
+</html>

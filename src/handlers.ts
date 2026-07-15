@@ -43,7 +43,10 @@ export function contentType(file: Bun.BunFile, path: string): string {
   const type = file.type;
   if (type && type !== FALLBACK && type !== "") return type;
 
-  const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
+  const dot = path.lastIndexOf(".");
+  const slash = path.lastIndexOf("/");
+  if (dot <= slash) return FALLBACK; // no extension, or a dotfile like ".env"
+  const ext = path.slice(dot).toLowerCase();
   return EXT_MAP[ext] ?? FALLBACK;
 }
 

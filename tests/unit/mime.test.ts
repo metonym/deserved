@@ -7,6 +7,8 @@ describe("mime", () => {
     expect(contentType(empty, "/x.html")).toContain("text/html");
     expect(contentType(empty, "/x.js")).toContain("javascript");
     expect(contentType(empty, "/x.unknown")).toBe("application/octet-stream");
+    expect(contentType(empty, "/LICENSE")).toBe("application/octet-stream");
+    expect(contentType(empty, "/.env")).toBe("application/octet-stream");
   });
 
   test("uses Bun.file type when present", () => {

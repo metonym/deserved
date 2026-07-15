@@ -356,11 +356,15 @@ const compressedCache = new Map<
   { size: number; mtimeMs: number; gz: Uint8Array<ArrayBuffer> }
 >();
 
-/** Cached by (size, mtimeMs) — the same identity used for the ETag. */
-function getCompressed(
+/**
+ * Cached by (size, mtimeMs) — the same identity used for the ETag. `loadRaw`
+ * is only invoked on a cache miss, so an unchanged file is neither re-read
+ * nor re-gzipped.
+ */
+async function getCompressed(
   resolved: ResolvedFile,
-  raw: Uint8Array<ArrayBuffer>,
-): Uint8Array<ArrayBuffer> | null {
+  loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
+): Promise<Uint8Array<ArrayBuffer> | null> {
   const cached = compressedCache.get(resolved.path);
   if (
     cached &&
@@ -370,7 +374,7 @@ function getCompressed(
     return cached.gz;
   }
   try {
-    const gz = Bun.gzipSync(raw);
+    const gz = Bun.gzipSync(await loadRaw());
     compressedCache.set(resolved.path, {
       size: resolved.size,
       mtimeMs: resolved.mtimeMs,
@@ -448,8 +452,9 @@ async function serveFile(
   ) {
     const accept = req.headers.get("Accept-Encoding") ?? "";
     if (accept.includes("gzip")) {
-      const raw = new Uint8Array(await file.arrayBuffer());
-      const compressed = getCompressed(resolved, raw);
+      const compressed = await getCompressed(resolved, async () => {
+        return new Uint8Array(await file.arrayBuffer());
+      });
       if (compressed) {
         headers.set("Content-Encoding", "gzip");
         headers.set("Content-Length", String(compressed.byteLength));

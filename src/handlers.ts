@@ -357,15 +357,14 @@ const compressedCache = new Map<
 >();
 
 /**
- * Cached by (size, mtimeMs) — the same identity used for the ETag. `loadRaw`
- * is only invoked on a cache miss, so an unchanged file is neither re-read
- * nor re-gzipped.
+ * Gzip cache keyed by (key, size, mtimeMs). Pick a distinct key when the same
+ * path can yield different bytes, like watch-injected HTML. loadRaw runs on miss.
  */
 async function getCompressed(
-  resolved: ResolvedFile,
+  resolved: { key: string; size: number; mtimeMs: number },
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
 ): Promise<Uint8Array<ArrayBuffer> | null> {
-  const cached = compressedCache.get(resolved.path);
+  const cached = compressedCache.get(resolved.key);
   if (
     cached &&
     cached.size === resolved.size &&
@@ -375,7 +374,7 @@ async function getCompressed(
   }
   try {
     const gz = Bun.gzipSync(await loadRaw());
-    compressedCache.set(resolved.path, {
+    compressedCache.set(resolved.key, {
       size: resolved.size,
       mtimeMs: resolved.mtimeMs,
       gz,
@@ -430,18 +429,24 @@ async function serveFile(
   }
 
   if (opts.watch && htmlish && req.method === "GET") {
-    let html = await file.text();
-    html = injectLiveReload(html);
-    let body: string | Uint8Array = html;
-
-    if (opts.compress && isCompressible(type)) {
-      const compressed = maybeCompress(req, html, headers);
-      if (compressed) body = compressed;
-    } else {
-      headers.set("Content-Length", String(Buffer.byteLength(html)));
+    const accept = req.headers.get("Accept-Encoding") ?? "";
+    if (opts.compress && isCompressible(type) && accept.includes("gzip")) {
+      const compressed = await getCompressed(
+        { key: `${path}\0live`, size, mtimeMs },
+        async () => encoder.encode(injectLiveReload(await file.text())),
+      );
+      if (compressed) {
+        headers.set("Content-Encoding", "gzip");
+        headers.set("Content-Length", String(compressed.byteLength));
+        headers.delete("Accept-Ranges");
+        headers.append("Vary", "Accept-Encoding");
+        return new Response(compressed, { status: 200, headers });
+      }
     }
 
-    return new Response(body, { status: 200, headers });
+    const html = injectLiveReload(await file.text());
+    headers.set("Content-Length", String(Buffer.byteLength(html)));
+    return new Response(html, { status: 200, headers });
   }
 
   if (
@@ -452,9 +457,10 @@ async function serveFile(
   ) {
     const accept = req.headers.get("Accept-Encoding") ?? "";
     if (accept.includes("gzip")) {
-      const compressed = await getCompressed(resolved, async () => {
-        return new Uint8Array(await file.arrayBuffer());
-      });
+      const compressed = await getCompressed(
+        { key: path, size, mtimeMs },
+        async () => new Uint8Array(await file.arrayBuffer()),
+      );
       if (compressed) {
         headers.set("Content-Encoding", "gzip");
         headers.set("Content-Length", String(compressed.byteLength));
@@ -527,31 +533,6 @@ function parseRange(
 
   end = Math.min(end, size - 1);
   return { start, end };
-}
-
-function maybeCompress(
-  req: Request,
-  data: string | ArrayBuffer,
-  headers: Headers,
-): Uint8Array | null {
-  const accept = req.headers.get("Accept-Encoding") ?? "";
-  const buf =
-    typeof data === "string" ? encoder.encode(data) : new Uint8Array(data);
-
-  if (accept.includes("gzip")) {
-    try {
-      const out = Bun.gzipSync(buf);
-      headers.set("Content-Encoding", "gzip");
-      headers.set("Content-Length", String(out.byteLength));
-      headers.delete("Accept-Ranges");
-      headers.append("Vary", "Accept-Encoding");
-      return out;
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
 }
 
 function withCors(res: Response, opts: Options): Response {

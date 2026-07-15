@@ -351,6 +351,37 @@ export function createHandler(opts: Options, hub?: Hub) {
   };
 }
 
+const compressedCache = new Map<
+  string,
+  { size: number; mtimeMs: number; gz: Uint8Array<ArrayBuffer> }
+>();
+
+/** Cached by (size, mtimeMs) — the same identity used for the ETag. */
+function getCompressed(
+  resolved: ResolvedFile,
+  raw: Uint8Array<ArrayBuffer>,
+): Uint8Array<ArrayBuffer> | null {
+  const cached = compressedCache.get(resolved.path);
+  if (
+    cached &&
+    cached.size === resolved.size &&
+    cached.mtimeMs === resolved.mtimeMs
+  ) {
+    return cached.gz;
+  }
+  try {
+    const gz = Bun.gzipSync(raw);
+    compressedCache.set(resolved.path, {
+      size: resolved.size,
+      mtimeMs: resolved.mtimeMs,
+      gz,
+    });
+    return gz;
+  } catch {
+    return null;
+  }
+}
+
 async function serveFile(
   req: Request,
   resolved: ResolvedFile,
@@ -415,10 +446,17 @@ async function serveFile(
     isCompressible(type) &&
     size < 2_000_000
   ) {
-    const text = await file.arrayBuffer();
-    const compressed = maybeCompress(req, text, headers);
-    if (compressed) {
-      return new Response(compressed, { status: 200, headers });
+    const accept = req.headers.get("Accept-Encoding") ?? "";
+    if (accept.includes("gzip")) {
+      const raw = new Uint8Array(await file.arrayBuffer());
+      const compressed = getCompressed(resolved, raw);
+      if (compressed) {
+        headers.set("Content-Encoding", "gzip");
+        headers.set("Content-Length", String(compressed.byteLength));
+        headers.delete("Accept-Ranges");
+        headers.append("Vary", "Accept-Encoding");
+        return new Response(compressed, { status: 200, headers });
+      }
     }
   }
 

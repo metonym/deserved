@@ -162,11 +162,15 @@ export async function startServer(opts: Options) {
   const hub = opts.watch ? createSseHub() : undefined;
   const fetch = createHandler({ ...opts, root }, hub);
 
+  // Bun.serve misses bind conflicts when hostname is the string "localhost".
+  // A literal loopback IP throws. Bind to 127.0.0.1 so a second instance fails cleanly.
+  const bindHost = opts.host === "localhost" ? "127.0.0.1" : opts.host;
+
   let server: ReturnType<typeof Bun.serve>;
   try {
     server = Bun.serve({
       port: opts.port,
-      hostname: opts.host,
+      hostname: bindHost,
       fetch: async (req) => {
         if (opts.cors && req.method === "OPTIONS") {
           return new Response(null, {

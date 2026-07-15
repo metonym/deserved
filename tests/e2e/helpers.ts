@@ -37,11 +37,15 @@ export type RunningCli = {
   stop: () => void;
 };
 
-/** Spawn `bun src/cli.ts ...` and wait until it answers. */
+/**
+ * Spawn `bun src/cli.ts ...` and wait until it answers.
+ * Pass `host: null` to omit `--host` entirely and exercise the CLI's own default.
+ */
 export async function startCli(
   root: string,
   flags: string[] = [],
   port?: number,
+  host: string | null = "127.0.0.1",
 ): Promise<RunningCli> {
   port ??= await freePort();
   const proc = Bun.spawn(
@@ -49,8 +53,7 @@ export async function startCli(
       "bun",
       CLI,
       root,
-      "--host",
-      "127.0.0.1",
+      ...(host === null ? [] : ["--host", host]),
       "--port",
       String(port),
       "--quiet",
@@ -62,7 +65,7 @@ export async function startCli(
     },
   );
 
-  const base = `http://127.0.0.1:${port}`;
+  const base = `http://${host ?? "localhost"}:${port}`;
   const deadline = Date.now() + 5000;
 
   while (Date.now() < deadline) {

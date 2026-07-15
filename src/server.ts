@@ -1,4 +1,5 @@
 import { watch } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { relative, resolve } from "node:path";
 import { createHandler } from "./handlers";
 
@@ -101,12 +102,30 @@ function logInfo(msg: string, quiet = false) {
   console.log(`${c.cyan}│${c.reset} ${msg}`);
 }
 
-function logBanner(url: string, root: string, flags: string[]) {
+function lanAddress(): string | null {
+  const nets = networkInterfaces();
+  for (const iface of Object.values(nets)) {
+    for (const net of iface ?? []) {
+      if (net.family === "IPv4" && !net.internal) return net.address;
+    }
+  }
+  return null;
+}
+
+function logBanner(
+  url: string,
+  root: string,
+  flags: string[],
+  networkUrl?: string,
+) {
   console.log();
   console.log(
     `  ${c.bold}deserved${c.reset} ${c.dim}serving${c.reset} ${root}`,
   );
   console.log(`  ${c.green}->${c.reset}  ${c.cyan}${url}${c.reset}`);
+  if (networkUrl) {
+    console.log(`  ${c.green}->${c.reset}  ${c.cyan}${networkUrl}${c.reset}`);
+  }
   if (flags.length) {
     console.log(`  ${c.dim}${flags.join("  ")}${c.reset}`);
   }
@@ -168,9 +187,15 @@ export async function startServer(opts: Options) {
     process.exit(1);
   }
 
-  const displayHost =
-    opts.host === "0.0.0.0" || opts.host === "::" ? "localhost" : opts.host;
+  const isWildcardHost = opts.host === "0.0.0.0" || opts.host === "::";
+  const displayHost = isWildcardHost ? "localhost" : opts.host;
   const url = `http://${displayHost}:${server.port}`;
+  const networkUrl = isWildcardHost
+    ? (() => {
+        const ip = lanAddress();
+        return ip ? `http://${ip}:${server.port}` : undefined;
+      })()
+    : undefined;
 
   const flags: string[] = [];
   if (opts.spa) flags.push("--spa");
@@ -180,7 +205,7 @@ export async function startServer(opts: Options) {
   if (!opts.compress) flags.push("--no-compress");
   if (!opts.cache) flags.push("--no-cache");
 
-  logBanner(url, relative(process.cwd(), root) || ".", flags);
+  logBanner(url, relative(process.cwd(), root) || ".", flags, networkUrl);
 
   if (opts.watch && hub) {
     let timer: Timer | null = null;

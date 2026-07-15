@@ -2,6 +2,26 @@ import { describe, expect, test } from "bun:test";
 import { fixtureDir, removeFixture, startCli, write } from "./helpers";
 
 describe("e2e watch / live reload", () => {
+  test("live-reload paths 404 quietly when --watch is off", async () => {
+    const root = fixtureDir("watch-off");
+    write(root, "index.html", "<!doctype html><h1>v1</h1>");
+
+    const cli = await startCli(root, ["--no-compress"]);
+    try {
+      const live = await fetch(`${cli.base}/__live.js`);
+      expect(live.status).toBe(404);
+
+      const events = await fetch(`${cli.base}/__events`);
+      expect(events.status).toBe(404);
+
+      const html = await fetch(`${cli.base}/`);
+      expect(await html.text()).not.toContain("/__live.js");
+    } finally {
+      cli.stop();
+      removeFixture(root);
+    }
+  });
+
   test(
     "injects live script, serves SSE, and reloads on change",
     async () => {

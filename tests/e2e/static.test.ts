@@ -44,6 +44,10 @@ describe("e2e static", () => {
 
       const missing = await fetch(`${cli.base}/nope`);
       expect(missing.status).toBe(404);
+
+      const posted = await fetch(`${cli.base}/`, { method: "POST" });
+      expect(posted.status).toBe(405);
+      expect(posted.headers.get("Allow")).toBe("GET, HEAD");
     } finally {
       cli.stop();
       removeFixture(root);

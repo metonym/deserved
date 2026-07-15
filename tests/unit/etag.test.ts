@@ -29,6 +29,26 @@ describe("etag", () => {
     expect(notModified(new Request("http://x"), etag)).toBe(false);
   });
 
+  test("If-None-Match matches anywhere in a comma-separated list", () => {
+    const etag = makeEtag(10, 1000);
+    expect(
+      notModified(
+        new Request("http://x", {
+          headers: { "If-None-Match": `"other-1", ${etag}, "other-2"` },
+        }),
+        etag,
+      ),
+    ).toBe(true);
+    expect(
+      notModified(
+        new Request("http://x", {
+          headers: { "If-None-Match": '"other-1", "other-2"' },
+        }),
+        etag,
+      ),
+    ).toBe(false);
+  });
+
   test("If-Modified-Since", () => {
     const mtimeMs = Date.parse("2024-01-01T00:00:00.000Z");
     expect(
@@ -48,6 +68,18 @@ describe("etag", () => {
       ),
     ).toBe(false);
     expect(notModifiedSince(new Request("http://x"), mtimeMs)).toBe(false);
+  });
+
+  test("If-Modified-Since with an unparseable date is treated as absent", () => {
+    const mtimeMs = Date.parse("2024-01-01T00:00:00.000Z");
+    expect(
+      notModifiedSince(
+        new Request("http://x", {
+          headers: { "If-Modified-Since": "not-a-date" },
+        }),
+        mtimeMs,
+      ),
+    ).toBe(false);
   });
 
   test("If-None-Match takes precedence over If-Modified-Since", () => {

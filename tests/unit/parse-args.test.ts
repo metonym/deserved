@@ -44,6 +44,29 @@ describe("parseArgs", () => {
     expect(opts.quiet).toBe(true);
   });
 
+  test("short flag aliases", () => {
+    const opts = parseArgs([
+      "bun",
+      "deserved",
+      "dist",
+      "-s",
+      "-p",
+      "8080",
+      "-H",
+      "0.0.0.0",
+      "-w",
+      "-o",
+      "-q",
+    ]);
+    expect(opts.root.endsWith("dist")).toBe(true);
+    expect(opts.spa).toBe(true);
+    expect(opts.port).toBe(8080);
+    expect(opts.host).toBe("0.0.0.0");
+    expect(opts.watch).toBe(true);
+    expect(opts.open).toBe(true);
+    expect(opts.quiet).toBe(true);
+  });
+
   test("equals form for port and host", () => {
     const opts = parseArgs([
       "bun",

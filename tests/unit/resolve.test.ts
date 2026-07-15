@@ -89,4 +89,16 @@ describe("realContainedPath", () => {
       rmSync(base, { recursive: true, force: true });
     }
   });
+
+  test("returns null when the root itself does not exist", () => {
+    const base = mkdtempSync(join(tmpdir(), "deserved-real-"));
+    const missingRoot = join(base, "nope");
+    try {
+      expect(
+        realContainedPath(missingRoot, join(missingRoot, "file.txt")),
+      ).toBeNull();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });

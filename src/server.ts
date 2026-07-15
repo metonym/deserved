@@ -81,6 +81,13 @@ const c = {
   bold: "\x1b[1m",
 };
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: strip control chars from logs
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+
+export function sanitizeForLog(s: string): string {
+  return s.replace(CONTROL_CHARS, "");
+}
+
 export function logRequest(
   method: string,
   status: number,
@@ -94,7 +101,9 @@ export function logRequest(
       : status < 400
         ? `${c.yellow}○${c.reset}`
         : `${c.red}✗${c.reset}`;
-  console.log(`${icon} ${c.dim}${method}${c.reset} ${status} ${path}`);
+  console.log(
+    `${icon} ${c.dim}${method}${c.reset} ${status} ${sanitizeForLog(path)}`,
+  );
 }
 
 function logInfo(msg: string, quiet = false) {

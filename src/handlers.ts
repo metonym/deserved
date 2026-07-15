@@ -1,5 +1,5 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
-import { join, normalize, resolve, sep } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 import { escapeHTML } from "bun";
 import {
   type createSseHub,
@@ -43,10 +43,7 @@ export function contentType(file: Bun.BunFile, path: string): string {
   const type = file.type;
   if (type && type !== FALLBACK && type !== "") return type;
 
-  const dot = path.lastIndexOf(".");
-  const slash = path.lastIndexOf("/");
-  if (dot <= slash) return FALLBACK; // no extension, or a dotfile like ".env"
-  const ext = path.slice(dot).toLowerCase();
+  const ext = extname(path).toLowerCase();
   return EXT_MAP[ext] ?? FALLBACK;
 }
 
@@ -102,6 +99,10 @@ export function acceptsHtml(req: Request): boolean {
   return accept.includes("text/html") || accept.includes("application/xhtml");
 }
 
+export function acceptsGzip(req: Request): boolean {
+  return (req.headers.get("Accept-Encoding") ?? "").includes("gzip");
+}
+
 /** False for /logo.png-style paths and /__ live-reload routes. */
 export function shouldSpaFallback(pathname: string): boolean {
   if (pathname.startsWith("/__")) return false;
@@ -117,12 +118,8 @@ export function resolveFile(
   pathname: string,
 ): ResolvedFile | null {
   const rootAbs = resolve(root);
-  let realRoot: string;
-  try {
-    realRoot = realpathSync(rootAbs);
-  } catch {
-    return null;
-  }
+  const realRoot = realpathRoot(rootAbs);
+  if (!realRoot) return null;
   const relative = pathname.replace(/^\/+/, "");
   const candidates = buildCandidates(relative);
 
@@ -183,27 +180,36 @@ function containedPath(realRoot: string, full: string): string | null {
   }
 }
 
+const realRootCache = new Map<string, string | null>();
+
+/** realpath(rootAbs), memoized — the served root is fixed for the process's life. */
+function realpathRoot(rootAbs: string): string | null {
+  let real = realRootCache.get(rootAbs);
+  if (real === undefined) {
+    try {
+      real = realpathSync(rootAbs);
+    } catch {
+      real = null;
+    }
+    realRootCache.set(rootAbs, real);
+  }
+  return real;
+}
+
 /** Like containedPath, but realpaths rootAbs first. rootAbs must be absolute. */
 export function realContainedPath(
   rootAbs: string,
   full: string,
 ): string | null {
-  try {
-    return containedPath(realpathSync(rootAbs), full);
-  } catch {
-    return null;
-  }
+  const realRoot = realpathRoot(rootAbs);
+  return realRoot ? containedPath(realRoot, full) : null;
 }
 
 /** Assumes pathname is already decoded. */
 export function resolveDir(root: string, pathname: string): string | null {
   const rootAbs = resolve(root);
-  let realRoot: string;
-  try {
-    realRoot = realpathSync(rootAbs);
-  } catch {
-    return null;
-  }
+  const realRoot = realpathRoot(rootAbs);
+  if (!realRoot) return null;
   const relative = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
   const full = safeJoin(rootAbs, relative || ".");
   if (!full) return null;
@@ -366,6 +372,8 @@ export function createHandler(opts: Options, hub?: Hub) {
   };
 }
 
+// Unbounded, but grows only with distinct files actually requested — fine
+// for a dev-server process serving one directory tree, not worth an LRU.
 const compressedCache = new Map<
   string,
   { size: number; mtimeMs: number; gz: Uint8Array<ArrayBuffer> }
@@ -398,6 +406,23 @@ async function getCompressed(
   } catch {
     return null;
   }
+}
+
+/** Gzip-encodes a response if the client accepts it, using getCompressed's cache; null if not applicable. */
+async function tryGzip(
+  req: Request,
+  headers: Headers,
+  cacheKey: { key: string; size: number; mtimeMs: number },
+  loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
+): Promise<Response | null> {
+  if (!acceptsGzip(req)) return null;
+  const compressed = await getCompressed(cacheKey, loadRaw);
+  if (!compressed) return null;
+  headers.set("Content-Encoding", "gzip");
+  headers.set("Content-Length", String(compressed.byteLength));
+  headers.delete("Accept-Ranges");
+  headers.append("Vary", "Accept-Encoding");
+  return new Response(compressed, { status: 200, headers });
 }
 
 async function serveFile(
@@ -444,19 +469,16 @@ async function serveFile(
   }
 
   if (opts.watch && htmlish && req.method === "GET") {
-    const accept = req.headers.get("Accept-Encoding") ?? "";
-    if (opts.compress && isCompressible(type) && accept.includes("gzip")) {
-      const compressed = await getCompressed(
+    if (opts.compress && isCompressible(type)) {
+      // NUL can't appear in a real path, so it safely namespaces the
+      // live-injected variant from the raw-file cache entry below.
+      const res = await tryGzip(
+        req,
+        headers,
         { key: `${path}\0live`, size, mtimeMs },
         async () => encoder.encode(injectLiveReload(await file.text())),
       );
-      if (compressed) {
-        headers.set("Content-Encoding", "gzip");
-        headers.set("Content-Length", String(compressed.byteLength));
-        headers.delete("Accept-Ranges");
-        headers.append("Vary", "Accept-Encoding");
-        return new Response(compressed, { status: 200, headers });
-      }
+      if (res) return res;
     }
 
     const html = injectLiveReload(await file.text());
@@ -470,20 +492,13 @@ async function serveFile(
     isCompressible(type) &&
     size < 2_000_000
   ) {
-    const accept = req.headers.get("Accept-Encoding") ?? "";
-    if (accept.includes("gzip")) {
-      const compressed = await getCompressed(
-        { key: path, size, mtimeMs },
-        async () => new Uint8Array(await file.arrayBuffer()),
-      );
-      if (compressed) {
-        headers.set("Content-Encoding", "gzip");
-        headers.set("Content-Length", String(compressed.byteLength));
-        headers.delete("Accept-Ranges");
-        headers.append("Vary", "Accept-Encoding");
-        return new Response(compressed, { status: 200, headers });
-      }
-    }
+    const res = await tryGzip(
+      req,
+      headers,
+      { key: path, size, mtimeMs },
+      async () => new Uint8Array(await file.arrayBuffer()),
+    );
+    if (res) return res;
   }
 
   headers.set("Content-Length", String(size));
@@ -494,13 +509,11 @@ function baseHeaders(
   etag: string,
   opts: Options,
   isHtmlFile: boolean,
-  mtimeMs?: number,
+  mtimeMs: number,
 ): Headers {
   const headers = new Headers();
   headers.set("ETag", etag);
-  if (mtimeMs !== undefined) {
-    headers.set("Last-Modified", new Date(mtimeMs).toUTCString());
-  }
+  headers.set("Last-Modified", new Date(mtimeMs).toUTCString());
 
   if (opts.watch || !opts.cache || isHtmlFile) {
     headers.set("Cache-Control", "no-cache");

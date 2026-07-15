@@ -203,12 +203,8 @@ export async function startServer(opts: Options) {
   const isWildcardHost = opts.host === "0.0.0.0" || opts.host === "::";
   const displayHost = isWildcardHost ? "localhost" : opts.host;
   const url = `http://${displayHost}:${server.port}`;
-  const networkUrl = isWildcardHost
-    ? (() => {
-        const ip = lanAddress();
-        return ip ? `http://${ip}:${server.port}` : undefined;
-      })()
-    : undefined;
+  const lanIp = isWildcardHost ? lanAddress() : null;
+  const networkUrl = lanIp ? `http://${lanIp}:${server.port}` : undefined;
 
   const flags: string[] = [];
   if (opts.spa) flags.push("--spa");

@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { join, normalize, resolve, sep } from "node:path";
 import { escapeHTML } from "bun";
 import {
@@ -98,18 +98,21 @@ export function resolveFile(
   root: string,
   pathname: string,
 ): ResolvedFile | null {
+  const rootAbs = resolve(root);
   const relative = pathname.replace(/^\/+/, "");
   const candidates = buildCandidates(relative);
 
   for (const candidate of candidates) {
-    const full = safeJoin(root, candidate);
+    const full = safeJoin(rootAbs, candidate);
     if (!full) continue;
+    const real = realContainedPath(rootAbs, full);
+    if (!real) continue;
     try {
-      const st = statSync(full);
+      const st = statSync(real);
       if (st.isFile()) {
         return {
-          path: full,
-          file: Bun.file(full),
+          path: real,
+          file: Bun.file(real),
           size: st.size,
           mtimeMs: st.mtimeMs,
         };
@@ -145,13 +148,36 @@ export function safeJoin(root: string, relative: string): string | null {
   return full;
 }
 
+/**
+ * Resolves symlinks in `full` and re-checks containment against the real
+ * root, so a symlink inside root that points outside it can't be used to
+ * escape. Null if `full` escapes root (after resolving symlinks) or doesn't
+ * exist. `rootAbs` must already be resolved (see `safeJoin`).
+ */
+export function realContainedPath(
+  rootAbs: string,
+  full: string,
+): string | null {
+  try {
+    const real = realpathSync(full);
+    const realRoot = realpathSync(rootAbs);
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) return null;
+    return real;
+  } catch {
+    return null;
+  }
+}
+
 /** Assumes pathname is already decoded. */
 export function resolveDir(root: string, pathname: string): string | null {
+  const rootAbs = resolve(root);
   const relative = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
-  const full = safeJoin(root, relative || ".");
+  const full = safeJoin(rootAbs, relative || ".");
   if (!full) return null;
+  const real = realContainedPath(rootAbs, full);
+  if (!real) return null;
   try {
-    if (statSync(full).isDirectory()) return full;
+    if (statSync(real).isDirectory()) return real;
   } catch {
     return null;
   }

@@ -117,13 +117,19 @@ export function resolveFile(
   pathname: string,
 ): ResolvedFile | null {
   const rootAbs = resolve(root);
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(rootAbs);
+  } catch {
+    return null;
+  }
   const relative = pathname.replace(/^\/+/, "");
   const candidates = buildCandidates(relative);
 
   for (const candidate of candidates) {
     const full = safeJoin(rootAbs, candidate);
     if (!full) continue;
-    const real = realContainedPath(rootAbs, full);
+    const real = containedPath(realRoot, full);
     if (!real) continue;
     try {
       const st = statSync(real);
@@ -166,21 +172,24 @@ export function safeJoin(root: string, relative: string): string | null {
   return full;
 }
 
-/**
- * Resolves symlinks in `full` and re-checks containment against the real
- * root, so a symlink inside root that points outside it can't be used to
- * escape. Null if `full` escapes root (after resolving symlinks) or doesn't
- * exist. `rootAbs` must already be resolved (see `safeJoin`).
- */
+/** realpath(full) must stay under realRoot. Null if it escapes or is missing. */
+function containedPath(realRoot: string, full: string): string | null {
+  try {
+    const real = realpathSync(full);
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) return null;
+    return real;
+  } catch {
+    return null;
+  }
+}
+
+/** Like containedPath, but realpaths rootAbs first. rootAbs must be absolute. */
 export function realContainedPath(
   rootAbs: string,
   full: string,
 ): string | null {
   try {
-    const real = realpathSync(full);
-    const realRoot = realpathSync(rootAbs);
-    if (real !== realRoot && !real.startsWith(realRoot + sep)) return null;
-    return real;
+    return containedPath(realpathSync(rootAbs), full);
   } catch {
     return null;
   }
@@ -189,10 +198,16 @@ export function realContainedPath(
 /** Assumes pathname is already decoded. */
 export function resolveDir(root: string, pathname: string): string | null {
   const rootAbs = resolve(root);
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(rootAbs);
+  } catch {
+    return null;
+  }
   const relative = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
   const full = safeJoin(rootAbs, relative || ".");
   if (!full) return null;
-  const real = realContainedPath(rootAbs, full);
+  const real = containedPath(realRoot, full);
   if (!real) return null;
   try {
     if (statSync(real).isDirectory()) return real;

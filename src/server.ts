@@ -143,23 +143,30 @@ export async function startServer(opts: Options) {
   const hub = opts.watch ? createSseHub() : undefined;
   const fetch = createHandler({ ...opts, root }, hub);
 
-  const server = Bun.serve({
-    port: opts.port,
-    hostname: opts.host,
-    fetch: async (req) => {
-      if (opts.cors && req.method === "OPTIONS") {
-        return new Response(null, {
-          status: 204,
-          headers: {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-          },
-        });
-      }
-      return fetch(req);
-    },
-  });
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    server = Bun.serve({
+      port: opts.port,
+      hostname: opts.host,
+      fetch: async (req) => {
+        if (opts.cors && req.method === "OPTIONS") {
+          return new Response(null, {
+            status: 204,
+            headers: {
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Headers": "*",
+              "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            },
+          });
+        }
+        return fetch(req);
+      },
+    });
+  } catch (err) {
+    console.error(`Error: could not bind to ${opts.host}:${opts.port}`);
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 
   const displayHost =
     opts.host === "0.0.0.0" || opts.host === "::" ? "localhost" : opts.host;

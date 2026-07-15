@@ -41,8 +41,9 @@ export type RunningCli = {
 export async function startCli(
   root: string,
   flags: string[] = [],
+  port?: number,
 ): Promise<RunningCli> {
-  const port = await freePort();
+  port ??= await freePort();
   const proc = Bun.spawn(
     [
       "bun",

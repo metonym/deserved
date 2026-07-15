@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "deserved": "./src/cli.ts"
+    "deserved": "src/cli.ts"
   },
   "scripts": {
     "start": "bun src/cli.ts",

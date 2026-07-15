@@ -78,6 +78,24 @@ export function notModified(req: Request, etag: string): boolean {
   return inm.split(",").some((t) => t.trim().replace(/^W\//, "") === etag);
 }
 
+export function notModifiedSince(req: Request, mtimeMs: number): boolean {
+  const ims = req.headers.get("If-Modified-Since");
+  if (!ims) return false;
+  const since = Date.parse(ims);
+  if (Number.isNaN(since)) return false;
+  return Math.trunc(mtimeMs / 1000) * 1000 <= since;
+}
+
+/** Per RFC 9110 §13.1.2, If-None-Match takes precedence when both are present. */
+export function isNotModified(
+  req: Request,
+  etag: string,
+  mtimeMs: number,
+): boolean {
+  const inm = req.headers.get("If-None-Match");
+  return inm ? notModified(req, etag) : notModifiedSince(req, mtimeMs);
+}
+
 export function acceptsHtml(req: Request): boolean {
   const accept = req.headers.get("Accept");
   if (!accept || accept === "*/*") return true;
@@ -346,14 +364,14 @@ async function serveFile(
   // run will 304 the old body (still requesting /__live.js).
   const etag = makeEtag(size, mtimeMs, opts.watch && htmlish ? "-live" : "");
 
-  if (notModified(req, etag)) {
+  if (isNotModified(req, etag, mtimeMs)) {
     return new Response(null, {
       status: 304,
-      headers: baseHeaders(etag, opts, htmlish),
+      headers: baseHeaders(etag, opts, htmlish, mtimeMs),
     });
   }
 
-  const headers = baseHeaders(etag, opts, htmlish);
+  const headers = baseHeaders(etag, opts, htmlish, mtimeMs);
   headers.set("Content-Type", type);
   headers.set("Accept-Ranges", "bytes");
 
@@ -412,9 +430,13 @@ function baseHeaders(
   etag: string,
   opts: Options,
   isHtmlFile: boolean,
+  mtimeMs?: number,
 ): Headers {
   const headers = new Headers();
   headers.set("ETag", etag);
+  if (mtimeMs !== undefined) {
+    headers.set("Last-Modified", new Date(mtimeMs).toUTCString());
+  }
 
   if (opts.watch || !opts.cache || isHtmlFile) {
     headers.set("Cache-Control", "no-cache");

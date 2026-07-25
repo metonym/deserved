@@ -1,6 +1,6 @@
 # deserved
 
-Tiny, zero-dependency Bun static file server.
+Tiny (12.9 kB gzip), zero-dep Bun static server.
 
 ```bash
 bunx deserved .

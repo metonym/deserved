@@ -21,7 +21,7 @@ function printHelp() {
         --no-dir         Disable directory listing
         --cache          Long-lived, immutable cache headers for assets
         --no-cache       Disable cache headers (default)
-        --compress       Gzip (default)
+        --compress       zstd or gzip, negotiated per request (default)
         --no-compress    Disable compression
     -q, --quiet          Suppress request logs
     -h, --help           Show help

@@ -43,6 +43,37 @@ describe("compressed output cache", () => {
     }
   });
 
+  test("caches zstd and gzip separately for the same file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "zstd-cache-"));
+    try {
+      writeFileSync(join(root, "index.html"), `<h1>${"x".repeat(2000)}</h1>`);
+      const handle = createHandler(makeOpts(root));
+
+      const zstdRes = await handle(
+        new Request("http://x/", {
+          headers: { "Accept-Encoding": "gzip, zstd" },
+        }),
+      );
+      const gzipRes = await handle(
+        new Request("http://x/", { headers: { "Accept-Encoding": "gzip" } }),
+      );
+
+      expect(zstdRes.headers.get("Content-Encoding")).toBe("zstd");
+      expect(gzipRes.headers.get("Content-Encoding")).toBe("gzip");
+
+      const zstdBytes = new Uint8Array(await zstdRes.arrayBuffer());
+      const gzipBytes = new Uint8Array(await gzipRes.arrayBuffer());
+      expect(
+        new TextDecoder().decode(Bun.zstdDecompressSync(zstdBytes)),
+      ).toContain("x".repeat(2000));
+      expect(new TextDecoder().decode(Bun.gunzipSync(gzipBytes))).toContain(
+        "x".repeat(2000),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("recompresses once the file's (size, mtime) changes on disk", async () => {
     const root = mkdtempSync(join(tmpdir(), "gzip-stale-"));
     try {

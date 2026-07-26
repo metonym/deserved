@@ -216,9 +216,10 @@ export async function startServer(opts: Options) {
 
   logBanner(url, relative(process.cwd(), root) || ".", flags, networkUrl);
 
+  let watcher: ReturnType<typeof watch> | undefined;
   if (opts.watch && hub) {
     let timer: Timer | null = null;
-    const watcher = watch(root, { recursive: true }, (_event, filename) => {
+    watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (filename?.includes("node_modules") || filename?.startsWith("."))
         return;
       if (timer) clearTimeout(timer);
@@ -228,14 +229,16 @@ export async function startServer(opts: Options) {
       }, 80);
     });
 
-    process.on("SIGINT", () => {
-      watcher.close();
-      server.stop();
-      process.exit(0);
-    });
-
     logInfo("watching for changes", opts.quiet);
   }
+
+  const shutdown = async () => {
+    watcher?.close();
+    await server.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
   if (opts.open) {
     await openBrowser(url);

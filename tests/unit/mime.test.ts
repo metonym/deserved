@@ -4,6 +4,7 @@ import {
   contentType,
   isCompressible,
   isHtml,
+  pickEncoding,
 } from "../../src/handlers";
 
 describe("mime", () => {
@@ -51,5 +52,26 @@ describe("mime", () => {
       ),
     ).toBe(false);
     expect(acceptsGzip(new Request("http://x"))).toBe(false);
+  });
+
+  test("pickEncoding prefers zstd, falls back to gzip, else null", () => {
+    expect(
+      pickEncoding(
+        new Request("http://x", {
+          headers: { "Accept-Encoding": "gzip, zstd" },
+        }),
+      ),
+    ).toBe("zstd");
+    expect(
+      pickEncoding(
+        new Request("http://x", { headers: { "Accept-Encoding": "gzip" } }),
+      ),
+    ).toBe("gzip");
+    expect(
+      pickEncoding(
+        new Request("http://x", { headers: { "Accept-Encoding": "br" } }),
+      ),
+    ).toBe(null);
+    expect(pickEncoding(new Request("http://x"))).toBe(null);
   });
 });

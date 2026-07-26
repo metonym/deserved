@@ -102,6 +102,17 @@ export function acceptsGzip(req: Request): boolean {
   return (req.headers.get("Accept-Encoding") ?? "").includes("gzip");
 }
 
+type CompressionEncoding = "zstd" | "gzip";
+
+// zstd compresses faster and smaller than gzip, but not every client speaks
+// it yet (e.g. Safari), so negotiate rather than replacing gzip outright.
+export function pickEncoding(req: Request): CompressionEncoding | null {
+  const accept = req.headers.get("Accept-Encoding") ?? "";
+  if (accept.includes("zstd")) return "zstd";
+  if (accept.includes("gzip")) return "gzip";
+  return null;
+}
+
 export function shouldSpaFallback(pathname: string): boolean {
   if (pathname.startsWith("/__")) return false;
   const last = pathname.slice(pathname.lastIndexOf("/") + 1);
@@ -365,48 +376,56 @@ export function createHandler(opts: Options, hub?: Hub) {
 // for a dev-server process serving one directory tree, not worth an LRU.
 const compressedCache = new Map<
   string,
-  { size: number; mtimeMs: number; gz: Uint8Array<ArrayBuffer> }
+  { size: number; mtimeMs: number; data: Uint8Array<ArrayBuffer> }
 >();
 
 /**
- * Gzip cache keyed by (key, size, mtimeMs). Pick a distinct key when the same
- * path can yield different bytes, like watch-injected HTML. loadRaw runs on miss.
+ * Compressed-output cache keyed by (key, encoding, size, mtimeMs). Pick a
+ * distinct key when the same path can yield different bytes, like
+ * watch-injected HTML. loadRaw runs on miss.
  */
 async function getCompressed(
   resolved: { key: string; size: number; mtimeMs: number },
+  encoding: CompressionEncoding,
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
 ): Promise<Uint8Array<ArrayBuffer> | null> {
-  const cached = compressedCache.get(resolved.key);
+  const cacheKey = `${resolved.key}:${encoding}`;
+  const cached = compressedCache.get(cacheKey);
   if (
     cached &&
     cached.size === resolved.size &&
     cached.mtimeMs === resolved.mtimeMs
   ) {
-    return cached.gz;
+    return cached.data;
   }
   try {
-    const gz = Bun.gzipSync(await loadRaw());
-    compressedCache.set(resolved.key, {
+    const raw = await loadRaw();
+    const data =
+      encoding === "zstd"
+        ? new Uint8Array(Bun.zstdCompressSync(raw))
+        : Bun.gzipSync(raw);
+    compressedCache.set(cacheKey, {
       size: resolved.size,
       mtimeMs: resolved.mtimeMs,
-      gz,
+      data,
     });
-    return gz;
+    return data;
   } catch {
     return null;
   }
 }
 
-async function tryGzip(
+async function tryCompress(
   req: Request,
   headers: Headers,
   cacheKey: { key: string; size: number; mtimeMs: number },
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
 ): Promise<Response | null> {
-  if (!acceptsGzip(req)) return null;
-  const compressed = await getCompressed(cacheKey, loadRaw);
+  const encoding = pickEncoding(req);
+  if (!encoding) return null;
+  const compressed = await getCompressed(cacheKey, encoding, loadRaw);
   if (!compressed) return null;
-  headers.set("Content-Encoding", "gzip");
+  headers.set("Content-Encoding", encoding);
   headers.set("Content-Length", String(compressed.byteLength));
   headers.delete("Accept-Ranges");
   headers.append("Vary", "Accept-Encoding");
@@ -460,7 +479,7 @@ async function serveFile(
     if (opts.compress && isCompressible(type)) {
       // NUL can't appear in a real path, so it safely namespaces the
       // live-injected variant from the raw-file cache entry below.
-      const res = await tryGzip(
+      const res = await tryCompress(
         req,
         headers,
         { key: `${path}\0live`, size, mtimeMs },
@@ -480,7 +499,7 @@ async function serveFile(
     isCompressible(type) &&
     size < 2_000_000
   ) {
-    const res = await tryGzip(
+    const res = await tryCompress(
       req,
       headers,
       { key: path, size, mtimeMs },

@@ -19,8 +19,8 @@ function printHelp() {
         --cors           Enable CORS
         --dir            Enable directory listing (default)
         --no-dir         Disable directory listing
-        --cache          Cache headers (default)
-        --no-cache       Disable cache headers
+        --cache          Long-lived, immutable cache headers for assets
+        --no-cache       Disable cache headers (default)
         --compress       Gzip (default)
         --no-compress    Disable compression
     -q, --quiet          Suppress request logs
@@ -45,7 +45,7 @@ export function parseArgs(argv: string[]): Options {
   let open = false;
   let cors = false;
   let dir = true;
-  let cache = true;
+  let cache = false;
   let compress = true;
   let quiet = false;
 

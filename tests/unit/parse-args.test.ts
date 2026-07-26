@@ -9,7 +9,7 @@ describe("parseArgs", () => {
     expect(opts.spa).toBe(false);
     expect(opts.watch).toBe(false);
     expect(opts.dir).toBe(true);
-    expect(opts.cache).toBe(true);
+    expect(opts.cache).toBe(false);
     expect(opts.compress).toBe(true);
     expect(opts.cors).toBe(false);
     expect(opts.quiet).toBe(false);
@@ -28,7 +28,7 @@ describe("parseArgs", () => {
       "--watch",
       "--cors",
       "--no-dir",
-      "--no-cache",
+      "--cache",
       "--no-compress",
       "--quiet",
     ]);
@@ -39,7 +39,7 @@ describe("parseArgs", () => {
     expect(opts.watch).toBe(true);
     expect(opts.cors).toBe(true);
     expect(opts.dir).toBe(false);
-    expect(opts.cache).toBe(false);
+    expect(opts.cache).toBe(true);
     expect(opts.compress).toBe(false);
     expect(opts.quiet).toBe(true);
   });

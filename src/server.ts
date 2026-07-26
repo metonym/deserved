@@ -212,7 +212,7 @@ export async function startServer(opts: Options) {
   if (opts.cors) flags.push("--cors");
   if (!opts.dir) flags.push("--no-dir");
   if (!opts.compress) flags.push("--no-compress");
-  if (!opts.cache) flags.push("--no-cache");
+  if (opts.cache) flags.push("--cache");
 
   logBanner(url, relative(process.cwd(), root) || ".", flags, networkUrl);
 

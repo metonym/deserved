@@ -31,7 +31,7 @@ bunx deserved [path] [options]
 | `-o, --open` | Open the browser |
 | `--cors` | Enable CORS |
 | `--no-dir` | Disable directory listing |
-| `--no-cache` | Disable cache headers |
+| `--cache` | Long-lived, immutable cache headers for assets |
 | `--no-compress` | Disable gzip |
 | `-q, --quiet` | Suppress request logs |
 
@@ -56,6 +56,6 @@ bunx deserved dist --watch
 - SPA mode (HTML Accept only; assets still 404)
 - Optional live reload (`--watch`) via Server-Sent Events
 - Gzip compression
-- Smart cache headers (HTML `no-cache`, assets long-lived)
+- Cache headers off by default (`no-cache`); opt in per-run with `--cache` for long-lived, immutable asset caching
 - Directory listings (disable with `--no-dir`)
 - Colored request logs

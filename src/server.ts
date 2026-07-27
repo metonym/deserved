@@ -24,6 +24,11 @@ export const LIVE_SCRIPT = `(()=>{const e=new EventSource("${EVENTS_PATH}");e.on
 
 const INJECT = `<script src="${LIVE_PATH}"></script>`;
 
+export function formatUrl(host: string, port: number): string {
+  const bracketed = host.includes(":") ? `[${host}]` : host;
+  return `http://${bracketed}:${port}`;
+}
+
 export function injectLiveReload(html: string): string {
   const idx = html.toLowerCase().lastIndexOf("</body>");
   if (idx === -1) return html + INJECT;
@@ -202,7 +207,7 @@ export async function startServer(opts: Options) {
 
   const isWildcardHost = opts.host === "0.0.0.0" || opts.host === "::";
   const displayHost = isWildcardHost ? "localhost" : opts.host;
-  const url = `http://${displayHost}:${server.port}`;
+  const url = formatUrl(displayHost, server.port ?? opts.port);
   const lanIp = isWildcardHost ? lanAddress() : null;
   const networkUrl = lanIp ? `http://${lanIp}:${server.port}` : undefined;
 

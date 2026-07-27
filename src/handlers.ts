@@ -297,81 +297,105 @@ function joinUrl(base: string, name: string): string {
 export function createHandler(opts: Options, hub?: Hub) {
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
-    const pathname = decodeURIComponent(url.pathname);
     const method = req.method.toUpperCase();
 
-    if (method !== "GET" && method !== "HEAD") {
-      const res = new Response("Method Not Allowed", {
-        status: 405,
-        headers: { Allow: "GET, HEAD" },
-      });
-      logRequest(method, 405, pathname, opts.quiet);
-      return withCors(res, opts);
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(url.pathname);
+    } catch {
+      const res = new Response("Bad Request", { status: 400 });
+      logRequest(method, 400, url.pathname, opts.quiet);
+      return headify(method, withCors(res, opts));
     }
 
-    if (opts.watch && pathname === LIVE_PATH) {
-      const res = new Response(LIVE_SCRIPT, {
+    try {
+      return await handleDecoded(req, method, pathname, opts, hub);
+    } catch (err) {
+      console.error(err);
+      const res = new Response("Internal Server Error", { status: 500 });
+      return withCors(res, opts);
+    }
+  };
+}
+
+async function handleDecoded(
+  req: Request,
+  method: string,
+  pathname: string,
+  opts: Options,
+  hub?: Hub,
+): Promise<Response> {
+  if (method !== "GET" && method !== "HEAD") {
+    const res = new Response("Method Not Allowed", {
+      status: 405,
+      headers: { Allow: "GET, HEAD" },
+    });
+    logRequest(method, 405, pathname, opts.quiet);
+    return withCors(res, opts);
+  }
+
+  if (opts.watch && pathname === LIVE_PATH) {
+    const res = new Response(LIVE_SCRIPT, {
+      headers: {
+        "Content-Type": "text/javascript;charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
+    logRequest(method, 200, pathname, opts.quiet);
+    return headify(method, withCors(res, opts));
+  }
+
+  if (opts.watch && pathname === EVENTS_PATH && hub) {
+    const res = hub.subscribe();
+    logRequest(method, 200, pathname, opts.quiet);
+    return withCors(res, opts);
+  }
+
+  // Stale tabs may still ask after --watch was used; stay quiet.
+  if (pathname === LIVE_PATH || pathname === EVENTS_PATH) {
+    return headify(
+      method,
+      withCors(new Response("Not Found", { status: 404 }), opts),
+    );
+  }
+
+  const resolved = resolveFile(opts.root, pathname);
+
+  if (resolved) {
+    const res = await serveFile(req, resolved, opts);
+    logRequest(method, res.status, pathname, opts.quiet);
+    return headify(method, withCors(res, opts));
+  }
+
+  if (opts.spa && acceptsHtml(req) && shouldSpaFallback(pathname)) {
+    const index = resolveFile(opts.root, "/");
+    if (index) {
+      const res = await serveFile(req, index, opts, true);
+      logRequest(method, res.status, pathname, opts.quiet);
+      return headify(method, withCors(res, opts));
+    }
+  }
+
+  if (opts.dir) {
+    const dir = resolveDir(opts.root, pathname);
+    if (dir) {
+      const entries = listDir(dir);
+      const html = directoryListing(pathname, entries);
+      const body = opts.watch ? injectLiveReload(html) : html;
+      const res = new Response(body, {
         headers: {
-          "Content-Type": "text/javascript;charset=utf-8",
-          "Cache-Control": "no-store",
+          "Content-Type": "text/html;charset=utf-8",
+          "Cache-Control": "no-cache",
         },
       });
       logRequest(method, 200, pathname, opts.quiet);
       return headify(method, withCors(res, opts));
     }
+  }
 
-    if (opts.watch && pathname === EVENTS_PATH && hub) {
-      const res = hub.subscribe();
-      logRequest(method, 200, pathname, opts.quiet);
-      return withCors(res, opts);
-    }
-
-    // Stale tabs may still ask after --watch was used; stay quiet.
-    if (pathname === LIVE_PATH || pathname === EVENTS_PATH) {
-      return headify(
-        method,
-        withCors(new Response("Not Found", { status: 404 }), opts),
-      );
-    }
-
-    const resolved = resolveFile(opts.root, pathname);
-
-    if (resolved) {
-      const res = await serveFile(req, resolved, opts);
-      logRequest(method, res.status, pathname, opts.quiet);
-      return headify(method, withCors(res, opts));
-    }
-
-    if (opts.spa && acceptsHtml(req) && shouldSpaFallback(pathname)) {
-      const index = resolveFile(opts.root, "/");
-      if (index) {
-        const res = await serveFile(req, index, opts, true);
-        logRequest(method, res.status, pathname, opts.quiet);
-        return headify(method, withCors(res, opts));
-      }
-    }
-
-    if (opts.dir) {
-      const dir = resolveDir(opts.root, pathname);
-      if (dir) {
-        const entries = listDir(dir);
-        const html = directoryListing(pathname, entries);
-        const body = opts.watch ? injectLiveReload(html) : html;
-        const res = new Response(body, {
-          headers: {
-            "Content-Type": "text/html;charset=utf-8",
-            "Cache-Control": "no-cache",
-          },
-        });
-        logRequest(method, 200, pathname, opts.quiet);
-        return headify(method, withCors(res, opts));
-      }
-    }
-
-    const res = new Response("Not Found", { status: 404 });
-    logRequest(method, 404, pathname, opts.quiet);
-    return headify(method, withCors(res, opts));
-  };
+  const res = new Response("Not Found", { status: 404 });
+  logRequest(method, 404, pathname, opts.quiet);
+  return headify(method, withCors(res, opts));
 }
 
 // Unbounded, but grows only with distinct files actually requested — fine
@@ -481,7 +505,7 @@ async function tryCompress(
   headers.set("Content-Encoding", encoding);
   headers.set("Content-Length", String(compressed.byteLength));
   headers.delete("Accept-Ranges");
-  headers.append("Vary", "Accept-Encoding");
+  headers.set("Vary", "Accept-Encoding");
   return new Response(compressed, { status: 200, headers });
 }
 
@@ -497,25 +521,30 @@ async function serveFile(
   // Injected HTML must not share the raw-file ETag or a later non-watch
   // run will 304 the old body (still requesting /__live.js).
   const etag = makeEtag(size, mtimeMs, opts.watch && htmlish ? "-live" : "");
+  const varies = opts.compress && isCompressible(type);
 
   if (isNotModified(req, etag, mtimeMs)) {
+    const notModifiedHeaders = baseHeaders(etag, opts, htmlish, mtimeMs);
+    if (varies) notModifiedHeaders.set("Vary", "Accept-Encoding");
     return new Response(null, {
       status: 304,
-      headers: baseHeaders(etag, opts, htmlish, mtimeMs),
+      headers: notModifiedHeaders,
     });
   }
 
   const headers = baseHeaders(etag, opts, htmlish, mtimeMs);
   headers.set("Content-Type", type);
   headers.set("Accept-Ranges", "bytes");
+  if (varies) headers.set("Vary", "Accept-Encoding");
 
   const range = req.headers.get("Range");
   if (range && req.method === "GET") {
     const parsed = parseRange(range, size);
     if (parsed === "invalid") {
+      headers.set("Content-Range", `bytes */${size}`);
       return new Response(null, {
         status: 416,
-        headers: { "Content-Range": `bytes */${size}` },
+        headers,
       });
     }
     if (parsed) {

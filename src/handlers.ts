@@ -530,6 +530,11 @@ async function serveFile(
     }
   }
 
+  if (req.method === "HEAD") {
+    headers.set("Content-Length", String(size));
+    return new Response(null, { status: 200, headers });
+  }
+
   if (opts.watch && htmlish && req.method === "GET") {
     if (opts.compress && isCompressible(type)) {
       // NUL can't appear in a real path, so it safely namespaces the
@@ -627,15 +632,10 @@ function parseRange(
 
 function withCors(res: Response, opts: Options): Response {
   if (!opts.cors) return res;
-  const headers = new Headers(res.headers);
-  headers.set("Access-Control-Allow-Origin", "*");
-  headers.set("Access-Control-Allow-Headers", "*");
-  headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-  return new Response(res.body, {
-    status: res.status,
-    statusText: res.statusText,
-    headers,
-  });
+  res.headers.set("Access-Control-Allow-Origin", "*");
+  res.headers.set("Access-Control-Allow-Headers", "*");
+  res.headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  return res;
 }
 
 function headify(method: string, res: Response): Response {

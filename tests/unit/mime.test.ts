@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  acceptsGzip,
   contentType,
   isCompressible,
   isHtml,
@@ -31,27 +30,6 @@ describe("mime", () => {
   test("isHtml", () => {
     expect(isHtml("text/html;charset=utf-8")).toBe(true);
     expect(isHtml("text/plain")).toBe(false);
-  });
-
-  test("acceptsGzip", () => {
-    expect(
-      acceptsGzip(
-        new Request("http://x", { headers: { "Accept-Encoding": "gzip" } }),
-      ),
-    ).toBe(true);
-    expect(
-      acceptsGzip(
-        new Request("http://x", {
-          headers: { "Accept-Encoding": "gzip, deflate, br" },
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      acceptsGzip(
-        new Request("http://x", { headers: { "Accept-Encoding": "br" } }),
-      ),
-    ).toBe(false);
-    expect(acceptsGzip(new Request("http://x"))).toBe(false);
   });
 
   test("pickEncoding prefers zstd, falls back to gzip, else null", () => {

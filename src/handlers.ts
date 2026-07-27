@@ -101,10 +101,6 @@ export function acceptsHtml(req: Request): boolean {
   return accept.includes("text/html") || accept.includes("application/xhtml");
 }
 
-export function acceptsGzip(req: Request): boolean {
-  return (req.headers.get("Accept-Encoding") ?? "").includes("gzip");
-}
-
 type CompressionEncoding = "zstd" | "gzip";
 
 // zstd compresses faster and smaller than gzip, but not every client speaks
@@ -124,9 +120,11 @@ export function shouldSpaFallback(pathname: string): boolean {
   return true;
 }
 
-function resolveFile(root: string, pathname: string): ResolvedFile | null {
-  const rootAbs = resolve(root);
-  const realRoot = realpathRoot(rootAbs);
+function resolveFileWithRoot(
+  rootAbs: string,
+  realRoot: string | null,
+  pathname: string,
+): ResolvedFile | null {
   if (!realRoot) return null;
   const relative = pathname.replace(/^\/+/, "");
   const candidates = buildCandidates(relative);
@@ -218,9 +216,11 @@ export function realContainedPath(
   return realRoot ? containedPath(realRoot, full) : null;
 }
 
-function resolveDir(root: string, pathname: string): string | null {
-  const rootAbs = resolve(root);
-  const realRoot = realpathRoot(rootAbs);
+function resolveDirWithRoot(
+  rootAbs: string,
+  realRoot: string | null,
+  pathname: string,
+): string | null {
   if (!realRoot) return null;
   const relative = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
   const full = safeJoin(rootAbs, relative || ".");
@@ -311,6 +311,9 @@ function joinUrl(base: string, name: string): string {
 }
 
 export function createHandler(opts: Options, hub?: Hub) {
+  const rootAbs = resolve(opts.root);
+  const realRoot = realpathRoot(rootAbs);
+
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const method = req.method.toUpperCase();
@@ -325,11 +328,21 @@ export function createHandler(opts: Options, hub?: Hub) {
     }
 
     try {
-      return await handleDecoded(req, method, pathname, url, opts, hub);
+      return await handleDecoded(
+        req,
+        method,
+        pathname,
+        url,
+        opts,
+        hub,
+        rootAbs,
+        realRoot,
+      );
     } catch (err) {
       console.error(err);
       const res = new Response("Internal Server Error", { status: 500 });
-      return withCors(res, opts);
+      logRequest(method, 500, url.pathname, opts.quiet);
+      return headify(method, withCors(res, opts));
     }
   };
 }
@@ -349,15 +362,21 @@ async function handleDecoded(
   pathname: string,
   url: URL,
   opts: Options,
-  hub?: Hub,
+  hub: Hub | undefined,
+  rootAbs: string,
+  realRoot: string | null,
 ): Promise<Response> {
+  const send = (res: Response) => {
+    logRequest(method, res.status, pathname, opts.quiet);
+    return headify(method, withCors(res, opts));
+  };
+
   if (method !== "GET" && method !== "HEAD") {
     const res = new Response("Method Not Allowed", {
       status: 405,
       headers: { Allow: "GET, HEAD" },
     });
-    logRequest(method, 405, pathname, opts.quiet);
-    return withCors(res, opts);
+    return send(res);
   }
 
   if (opts.watch && pathname === LIVE_PATH) {
@@ -367,11 +386,11 @@ async function handleDecoded(
         "Cache-Control": "no-store",
       },
     });
-    logRequest(method, 200, pathname, opts.quiet);
-    return headify(method, withCors(res, opts));
+    return send(res);
   }
 
   if (opts.watch && pathname === EVENTS_PATH && hub) {
+    // HEAD must not consume an SSE slot, so don't use the standard send().
     const res = hub.subscribe();
     logRequest(method, 200, pathname, opts.quiet);
     return withCors(res, opts);
@@ -385,7 +404,7 @@ async function handleDecoded(
     );
   }
 
-  const resolved = resolveFile(opts.root, pathname);
+  const resolved = resolveFileWithRoot(rootAbs, realRoot, pathname);
 
   if (resolved) {
     if (resolved.kind === "dir-index" && !pathname.endsWith("/")) {
@@ -394,21 +413,19 @@ async function handleDecoded(
       return headify(method, res);
     }
     const res = await serveFile(req, resolved, opts);
-    logRequest(method, res.status, pathname, opts.quiet);
-    return headify(method, withCors(res, opts));
+    return send(res);
   }
 
   if (opts.spa && acceptsHtml(req) && shouldSpaFallback(pathname)) {
-    const index = resolveFile(opts.root, "/");
+    const index = resolveFileWithRoot(rootAbs, realRoot, "/");
     if (index) {
       const res = await serveFile(req, index, opts, true);
-      logRequest(method, res.status, pathname, opts.quiet);
-      return headify(method, withCors(res, opts));
+      return send(res);
     }
   }
 
   if (opts.dir) {
-    const dir = resolveDir(opts.root, pathname);
+    const dir = resolveDirWithRoot(rootAbs, realRoot, pathname);
     if (dir) {
       if (!pathname.endsWith("/")) {
         const res = directoryRedirect(url, opts);
@@ -424,14 +441,12 @@ async function handleDecoded(
           "Cache-Control": "no-cache",
         },
       });
-      logRequest(method, 200, pathname, opts.quiet);
-      return headify(method, withCors(res, opts));
+      return send(res);
     }
   }
 
   const res = new Response("Not Found", { status: 404 });
-  logRequest(method, 404, pathname, opts.quiet);
-  return headify(method, withCors(res, opts));
+  return send(res);
 }
 
 // Unbounded, but grows only with distinct files actually requested — fine
@@ -497,14 +512,16 @@ async function getCompressed(
     return pending.promise;
   }
 
-  const entry = {
-    size: resolved.size,
-    mtimeMs: resolved.mtimeMs,
-  } as {
+  const entry: {
     size: number;
     mtimeMs: number;
     promise: Promise<Uint8Array<ArrayBuffer> | null>;
+  } = {
+    size: resolved.size,
+    mtimeMs: resolved.mtimeMs,
+    promise: Promise.resolve(null),
   };
+
   entry.promise = (async () => {
     try {
       const raw = await loadRaw();
@@ -518,7 +535,7 @@ async function getCompressed(
     } catch {
       return null;
     } finally {
-      if (pendingCompression.get(cacheKey) === entry) {
+      if (pendingCompression.get(cacheKey)?.promise === entry.promise) {
         pendingCompression.delete(cacheKey);
       }
     }

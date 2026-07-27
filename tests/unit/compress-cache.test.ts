@@ -104,32 +104,32 @@ describe("compressed output cache", () => {
 });
 
 describe("watch-mode compressed output cache", () => {
-  test("second identical request reuses the cached gzip without re-reading or re-gzipping", async () => {
-    const root = mkdtempSync(join(tmpdir(), "gzip-watch-cache-"));
+  test("second identical request reuses the cached zstd without re-reading or re-compressing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "zstd-watch-cache-"));
     try {
       writeFileSync(join(root, "index.html"), `<h1>${"x".repeat(2000)}</h1>`);
       const handle = createHandler(makeOpts(root, { watch: true }));
       const req = () =>
-        new Request("http://x/", { headers: { "Accept-Encoding": "gzip" } });
+        new Request("http://x/", { headers: { "Accept-Encoding": "zstd" } });
 
-      const gzipSpy = spyOn(Bun, "gzipSync");
+      const zstdSpy = spyOn(Bun, "zstdCompress");
       try {
         const first = await handle(req());
         const firstBytes = new Uint8Array(await first.arrayBuffer());
-        expect(first.headers.get("Content-Encoding")).toBe("gzip");
-        expect(gzipSpy).toHaveBeenCalledTimes(1);
+        expect(first.headers.get("Content-Encoding")).toBe("zstd");
+        expect(zstdSpy).toHaveBeenCalledTimes(1);
 
         const second = await handle(req());
         const secondBytes = new Uint8Array(await second.arrayBuffer());
         expect(secondBytes).toEqual(firstBytes);
-        // Cache hit: no re-gzip (and therefore no re-read of the file).
-        expect(gzipSpy).toHaveBeenCalledTimes(1);
+        // Cache hit: no re-compress (and therefore no re-read of the file).
+        expect(zstdSpy).toHaveBeenCalledTimes(1);
 
-        expect(new TextDecoder().decode(Bun.gunzipSync(secondBytes))).toContain(
-          "/__live.js",
-        );
+        expect(
+          new TextDecoder().decode(Bun.zstdDecompressSync(secondBytes)),
+        ).toContain("/__live.js");
       } finally {
-        gzipSpy.mockRestore();
+        zstdSpy.mockRestore();
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -159,6 +159,85 @@ describe("watch-mode compressed output cache", () => {
       const decoded = new TextDecoder().decode(Bun.gunzipSync(secondBytes));
       expect(decoded).toContain("y".repeat(2500));
       expect(decoded).toContain("/__live.js");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("async compression round-trips", () => {
+  test("gzip output decompresses with Bun.gunzipSync", async () => {
+    const root = mkdtempSync(join(tmpdir(), "gzip-roundtrip-"));
+    try {
+      writeFileSync(join(root, "index.html"), `<h1>${"a".repeat(3000)}</h1>`);
+      const handle = createHandler(makeOpts(root));
+
+      const res = await handle(
+        new Request("http://x/", { headers: { "Accept-Encoding": "gzip" } }),
+      );
+      expect(res.headers.get("Content-Encoding")).toBe("gzip");
+
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      expect(new TextDecoder().decode(Bun.gunzipSync(bytes))).toContain(
+        "a".repeat(3000),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("zstd output decompresses with Bun.zstdDecompressSync", async () => {
+    const root = mkdtempSync(join(tmpdir(), "zstd-roundtrip-"));
+    try {
+      writeFileSync(join(root, "index.html"), `<h1>${"b".repeat(3000)}</h1>`);
+      const handle = createHandler(makeOpts(root));
+
+      const res = await handle(
+        new Request("http://x/", { headers: { "Accept-Encoding": "zstd" } }),
+      );
+      expect(res.headers.get("Content-Encoding")).toBe("zstd");
+
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      expect(new TextDecoder().decode(Bun.zstdDecompressSync(bytes))).toContain(
+        "b".repeat(3000),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("single-flight compression", () => {
+  test("10 concurrent cold requests for the same file compress exactly once", async () => {
+    const root = mkdtempSync(join(tmpdir(), "single-flight-"));
+    try {
+      writeFileSync(join(root, "index.html"), `<h1>${"z".repeat(5000)}</h1>`);
+      const handle = createHandler(makeOpts(root));
+      const req = () =>
+        new Request("http://x/", { headers: { "Accept-Encoding": "zstd" } });
+
+      const zstdSpy = spyOn(Bun, "zstdCompress");
+      try {
+        const responses = await Promise.all(
+          Array.from({ length: 10 }, () => handle(req())),
+        );
+
+        for (const res of responses) {
+          expect(res.headers.get("Content-Encoding")).toBe("zstd");
+        }
+
+        const bodies = await Promise.all(
+          responses.map(async (res) => new Uint8Array(await res.arrayBuffer())),
+        );
+        for (const body of bodies.slice(1)) {
+          expect(body).toEqual(bodies[0]);
+        }
+
+        // Single-flight: 10 concurrent misses collapse into one compression.
+        expect(zstdSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        zstdSpy.mockRestore();
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

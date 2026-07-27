@@ -1,5 +1,7 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import { escapeHTML } from "bun";
 import {
   type createSseHub,
@@ -379,10 +381,37 @@ const compressedCache = new Map<
   { size: number; mtimeMs: number; data: Uint8Array<ArrayBuffer> }
 >();
 
+// In-flight compressions, keyed the same as compressedCache plus the file
+// version being compressed, so concurrent requests for a stale version
+// in-flight don't get handed a promise for an even-older result.
+const pendingCompression = new Map<
+  string,
+  {
+    size: number;
+    mtimeMs: number;
+    promise: Promise<Uint8Array<ArrayBuffer> | null>;
+  }
+>();
+
+// No Bun.gzip async API exists (only gzipSync); fall back to node:zlib so
+// gzip, like zstd, runs off the main thread instead of blocking the loop.
+const gzipAsync = promisify(gzip);
+
+async function compress(
+  encoding: CompressionEncoding,
+  raw: Uint8Array<ArrayBuffer>,
+): Promise<Uint8Array<ArrayBuffer>> {
+  if (encoding === "zstd") {
+    return new Uint8Array(await Bun.zstdCompress(raw));
+  }
+  return new Uint8Array(await gzipAsync(raw));
+}
+
 /**
  * Compressed-output cache keyed by (key, encoding, size, mtimeMs). Pick a
  * distinct key when the same path can yield different bytes, like
- * watch-injected HTML. loadRaw runs on miss.
+ * watch-injected HTML. loadRaw runs on miss. Concurrent misses for the same
+ * (key, encoding, version) single-flight onto one in-flight compression.
  */
 async function getCompressed(
   resolved: { key: string; size: number; mtimeMs: number },
@@ -398,21 +427,45 @@ async function getCompressed(
   ) {
     return cached.data;
   }
-  try {
-    const raw = await loadRaw();
-    const data =
-      encoding === "zstd"
-        ? new Uint8Array(Bun.zstdCompressSync(raw))
-        : Bun.gzipSync(raw);
-    compressedCache.set(cacheKey, {
-      size: resolved.size,
-      mtimeMs: resolved.mtimeMs,
-      data,
-    });
-    return data;
-  } catch {
-    return null;
+
+  const pending = pendingCompression.get(cacheKey);
+  if (
+    pending &&
+    pending.size === resolved.size &&
+    pending.mtimeMs === resolved.mtimeMs
+  ) {
+    return pending.promise;
   }
+
+  const entry = {
+    size: resolved.size,
+    mtimeMs: resolved.mtimeMs,
+  } as {
+    size: number;
+    mtimeMs: number;
+    promise: Promise<Uint8Array<ArrayBuffer> | null>;
+  };
+  entry.promise = (async () => {
+    try {
+      const raw = await loadRaw();
+      const data = await compress(encoding, raw);
+      compressedCache.set(cacheKey, {
+        size: resolved.size,
+        mtimeMs: resolved.mtimeMs,
+        data,
+      });
+      return data;
+    } catch {
+      return null;
+    } finally {
+      if (pendingCompression.get(cacheKey) === entry) {
+        pendingCompression.delete(cacheKey);
+      }
+    }
+  })();
+
+  pendingCompression.set(cacheKey, entry);
+  return entry.promise;
 }
 
 async function tryCompress(

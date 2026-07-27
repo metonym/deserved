@@ -116,6 +116,12 @@ function logInfo(msg: string, quiet = false) {
   console.log(`${c.cyan}│${c.reset} ${msg}`);
 }
 
+export function isIgnoredWatchPath(filename: string): boolean {
+  return filename
+    .split(/[/\\]/)
+    .some((segment) => segment.startsWith(".") || segment === "node_modules");
+}
+
 function lanAddress(): string | null {
   const nets = networkInterfaces();
   for (const iface of Object.values(nets)) {
@@ -225,8 +231,7 @@ export async function startServer(opts: Options) {
   if (opts.watch && hub) {
     let timer: Timer | null = null;
     watcher = watch(root, { recursive: true }, (_event, filename) => {
-      if (filename?.includes("node_modules") || filename?.startsWith("."))
-        return;
+      if (filename && isIgnoredWatchPath(filename)) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         logReload(opts.quiet);

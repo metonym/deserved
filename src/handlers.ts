@@ -95,6 +95,23 @@ export function isNotModified(
   return inm ? notModified(req, etag) : notModifiedSince(req, mtimeMs);
 }
 
+export function ifRangeSatisfied(
+  req: Request,
+  etag: string,
+  mtimeMs: number,
+): boolean {
+  const ifRange = req.headers.get("If-Range");
+  if (!ifRange) return true;
+
+  if (ifRange.startsWith('"') || ifRange.startsWith("W/")) {
+    return ifRange === etag;
+  }
+
+  const date = Date.parse(ifRange);
+  if (Number.isNaN(date)) return false;
+  return date === Math.trunc(mtimeMs / 1000) * 1000;
+}
+
 export function acceptsHtml(req: Request): boolean {
   const accept = req.headers.get("Accept");
   if (!accept || accept === "*/*") return true;
@@ -445,6 +462,23 @@ async function handleDecoded(
     }
   }
 
+  if (acceptsHtml(req)) {
+    const notFoundPage = resolveFileWithRoot(rootAbs, realRoot, "/404.html");
+    if (notFoundPage) {
+      const html = await notFoundPage.file.text();
+      // Error pages are small; skip compression to keep this path simple.
+      const body = opts.watch ? injectLiveReload(html) : html;
+      const res = new Response(body, {
+        status: 404,
+        headers: {
+          "Content-Type": "text/html;charset=utf-8",
+          "Cache-Control": "no-cache",
+        },
+      });
+      return send(res);
+    }
+  }
+
   const res = new Response("Not Found", { status: 404 });
   return send(res);
 }
@@ -590,7 +624,10 @@ async function serveFile(
   headers.set("Accept-Ranges", "bytes");
   if (varies) headers.set("Vary", "Accept-Encoding");
 
-  const range = req.headers.get("Range");
+  const range =
+    req.headers.get("Range") && ifRangeSatisfied(req, etag, mtimeMs)
+      ? req.headers.get("Range")
+      : null;
   if (range && req.method === "GET") {
     const parsed = parseRange(range, size);
     if (parsed === "invalid") {

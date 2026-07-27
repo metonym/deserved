@@ -82,3 +82,79 @@ describe("Range requests", () => {
     expect(res.body).toBeNull();
   });
 });
+
+describe("If-Range", () => {
+  const root = mkdtempSync(join(tmpdir(), "if-range-"));
+  const content = "0123456789";
+  writeFileSync(join(root, "file.txt"), content);
+  const handle = createHandler(makeOpts(root));
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  async function currentValidators() {
+    const res = await handle(new Request("http://x/file.txt"));
+    return {
+      etag: res.headers.get("ETag") ?? "",
+      lastModified: res.headers.get("Last-Modified") ?? "",
+    };
+  }
+
+  test("matching strong etag honors the Range", async () => {
+    const { etag } = await currentValidators();
+    const res = await handle(
+      new Request("http://x/file.txt", {
+        headers: { Range: "bytes=0-4", "If-Range": etag },
+      }),
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get("Content-Range")).toBe("bytes 0-4/10");
+  });
+
+  test("stale etag falls back to a full 200", async () => {
+    const res = await handle(
+      new Request("http://x/file.txt", {
+        headers: { Range: "bytes=0-4", "If-Range": '"stale-etag"' },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Range")).toBeNull();
+    expect(await res.text()).toBe(content);
+  });
+
+  test("weak validator never matches", async () => {
+    const { etag } = await currentValidators();
+    const res = await handle(
+      new Request("http://x/file.txt", {
+        headers: { Range: "bytes=0-4", "If-Range": `W/${etag}` },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Range")).toBeNull();
+  });
+
+  test("matching Last-Modified date honors the Range", async () => {
+    const { lastModified } = await currentValidators();
+    const res = await handle(
+      new Request("http://x/file.txt", {
+        headers: { Range: "bytes=0-4", "If-Range": lastModified },
+      }),
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get("Content-Range")).toBe("bytes 0-4/10");
+  });
+
+  test("older date falls back to a full 200", async () => {
+    const res = await handle(
+      new Request("http://x/file.txt", {
+        headers: {
+          Range: "bytes=0-4",
+          "If-Range": "Mon, 01 Jan 2001 00:00:00 GMT",
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Range")).toBeNull();
+  });
+});

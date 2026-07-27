@@ -468,10 +468,12 @@ async function serveFile(
     if (parsed) {
       const { start, end } = parsed;
       const length = end - start + 1;
-      const slice = await file.slice(start, end + 1).arrayBuffer();
       headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
       headers.set("Content-Length", String(length));
-      return new Response(slice, { status: 206, headers });
+      return new Response(file.slice(start, end + 1), {
+        status: 206,
+        headers,
+      });
     }
   }
 

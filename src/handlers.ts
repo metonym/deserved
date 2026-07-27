@@ -18,6 +18,7 @@ export type ResolvedFile = {
   file: Bun.BunFile;
   size: number;
   mtimeMs: number;
+  kind: "file" | "html-ext" | "dir-index";
 };
 
 type Hub = ReturnType<typeof createSseHub>;
@@ -143,12 +144,21 @@ function resolveFile(root: string, pathname: string): ResolvedFile | null {
           file: Bun.file(real),
           size: st.size,
           mtimeMs: st.mtimeMs,
+          kind: candidateKind(candidate),
         };
       }
     } catch {}
   }
 
   return null;
+}
+
+function candidateKind(candidate: string): ResolvedFile["kind"] {
+  if (candidate.endsWith("/index.html")) return "dir-index";
+  if (candidate.endsWith(".html") && !candidate.endsWith("/index.html")) {
+    return "html-ext";
+  }
+  return "file";
 }
 
 export function buildCandidates(relative: string): string[] {
@@ -240,11 +250,13 @@ export function directoryListing(
   entries: { name: string; dir: boolean }[],
 ): string {
   const base = pathname.endsWith("/") ? pathname : `${pathname}/`;
+  const encodedBase = encodeUrlPath(base);
   const parent = parentPath(pathname);
 
   const rows = entries
     .map((e) => {
-      const href = joinUrl(base, e.name) + (e.dir ? "/" : "");
+      const href =
+        joinUrl(encodedBase, encodeURIComponent(e.name)) + (e.dir ? "/" : "");
       const label = e.dir ? `${e.name}/` : e.name;
       return `  <li><a href="${escapeHTML(href)}">${escapeHTML(label)}</a></li>`;
     })
@@ -252,7 +264,7 @@ export function directoryListing(
 
   const up =
     parent !== null
-      ? `  <li><a href="${escapeHTML(parent)}">../</a></li>\n`
+      ? `  <li><a href="${escapeHTML(encodeUrlPath(parent))}">../</a></li>\n`
       : "";
 
   return `<!DOCTYPE html>
@@ -289,6 +301,10 @@ function parentPath(pathname: string): string | null {
   return trimmed.slice(0, idx + 1);
 }
 
+function encodeUrlPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 function joinUrl(base: string, name: string): string {
   if (base === "/") return `/${name}`;
   return `${base.replace(/\/+$/, "")}/${name}`;
@@ -309,7 +325,7 @@ export function createHandler(opts: Options, hub?: Hub) {
     }
 
     try {
-      return await handleDecoded(req, method, pathname, opts, hub);
+      return await handleDecoded(req, method, pathname, url, opts, hub);
     } catch (err) {
       console.error(err);
       const res = new Response("Internal Server Error", { status: 500 });
@@ -318,10 +334,20 @@ export function createHandler(opts: Options, hub?: Hub) {
   };
 }
 
+function directoryRedirect(url: URL, opts: Options): Response {
+  const location = `${url.pathname}/${url.search}`;
+  const res = new Response(null, {
+    status: 301,
+    headers: { Location: location },
+  });
+  return withCors(res, opts);
+}
+
 async function handleDecoded(
   req: Request,
   method: string,
   pathname: string,
+  url: URL,
   opts: Options,
   hub?: Hub,
 ): Promise<Response> {
@@ -362,6 +388,11 @@ async function handleDecoded(
   const resolved = resolveFile(opts.root, pathname);
 
   if (resolved) {
+    if (resolved.kind === "dir-index" && !pathname.endsWith("/")) {
+      const res = directoryRedirect(url, opts);
+      logRequest(method, res.status, pathname, opts.quiet);
+      return headify(method, res);
+    }
     const res = await serveFile(req, resolved, opts);
     logRequest(method, res.status, pathname, opts.quiet);
     return headify(method, withCors(res, opts));
@@ -379,6 +410,11 @@ async function handleDecoded(
   if (opts.dir) {
     const dir = resolveDir(opts.root, pathname);
     if (dir) {
+      if (!pathname.endsWith("/")) {
+        const res = directoryRedirect(url, opts);
+        logRequest(method, res.status, pathname, opts.quiet);
+        return headify(method, res);
+      }
       const entries = listDir(dir);
       const html = directoryListing(pathname, entries);
       const body = opts.watch ? injectLiveReload(html) : html;

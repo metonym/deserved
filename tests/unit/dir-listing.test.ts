@@ -2,7 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { directoryListing, listDir } from "../../src/handlers";
+import { createHandler, directoryListing, listDir } from "../../src/handlers";
+import type { Options } from "../../src/server";
+
+function makeOpts(root: string, overrides: Partial<Options> = {}): Options {
+  return {
+    root,
+    port: 0,
+    host: "127.0.0.1",
+    spa: false,
+    watch: false,
+    open: false,
+    cors: false,
+    dir: false,
+    cache: true,
+    compress: false,
+    quiet: true,
+    ...overrides,
+  };
+}
 
 describe("listDir", () => {
   test("excludes dotfiles and sorts directories before files, alphabetically", () => {
@@ -58,5 +76,41 @@ describe("directoryListing", () => {
   test("includes a parent link except at root", () => {
     expect(directoryListing("/docs/", [])).toContain('href="/">../</a>');
     expect(directoryListing("/", [])).not.toContain("../</a>");
+  });
+
+  test("URI-encodes hrefs for names with #, ?, %, or spaces", () => {
+    const html = directoryListing("/", [
+      { name: "a#b.txt", dir: false },
+      { name: "a?b.txt", dir: false },
+      { name: "100% real.txt", dir: false },
+    ]);
+
+    expect(html).toContain('href="/a%23b.txt"');
+    expect(html).toContain('href="/a%3Fb.txt"');
+    expect(html).toContain('href="/100%25%20real.txt"');
+
+    expect(html).toContain(">a#b.txt<");
+    expect(html).toContain(">a?b.txt<");
+    expect(html).toContain(">100% real.txt<");
+  });
+
+  test("round-trip: an encoded href for a % name is fetchable through the handler", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "deserved-listdir-roundtrip-"));
+    try {
+      writeFileSync(join(dir, "100% real.txt"), "hello");
+      const entries = listDir(dir);
+      const html = directoryListing("/", entries);
+
+      const match = /href="([^"]+)">100% real\.txt</.exec(html);
+      expect(match).not.toBeNull();
+      const href = match?.[1] ?? "";
+
+      const handle = createHandler(makeOpts(dir));
+      const res = await handle(new Request(`http://x${href}`));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("hello");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

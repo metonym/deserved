@@ -12,10 +12,11 @@ mkdirSync(out, { recursive: true });
 const pkg = await Bun.file(join(root, "package.json")).json();
 
 const result = await Bun.build({
-  entrypoints: [join(root, "src/cli.ts")],
+  entrypoints: [join(root, "src/cli.ts"), join(root, "src/index.ts")],
   outdir: out,
   target: "bun",
   minify: true,
+  splitting: false,
 });
 
 if (!result.success) {
@@ -37,5 +38,8 @@ for (const key of STRIP) {
 }
 
 pkg.bin = { deserved: "./cli.js" };
+pkg.main = "./index.js";
+pkg.module = "./index.js";
+pkg.exports = { ".": "./index.js" };
 
 writeFileSync(join(out, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);

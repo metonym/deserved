@@ -24,7 +24,7 @@ bunx deserved [path] [options]
 
 | Flag | Description |
 |------|-------------|
-| `-p, --port <n>` | Port (default `3000`) |
+| `-p, --port <n>` | Port (default `3000`, or `$PORT`) |
 | `-H, --host <host>` | Hostname (default `localhost`) |
 | `-s, --spa` | SPA fallback to `index.html` |
 | `-w, --watch` | Live reload via SSE |
@@ -46,7 +46,12 @@ bunx deserved dist --host 0.0.0.0
 bunx deserved dist --open
 bunx deserved dist --cors
 bunx deserved dist --watch
+PORT=8080 bunx deserved dist
 ```
+
+The default port (`3000`, or `$PORT` if set) hops to the next free port (up
+to 10 tries) if it's taken; an explicit `--port` never does — it fails
+cleanly instead.
 
 ## Programmatic use
 
@@ -62,7 +67,8 @@ await server.stop();
 CLI (`DEFAULT_OPTIONS`). It resolves to `{ port, hostname, url, stop() }`;
 `stop()` closes the server and, if `watch: true` was passed, the file
 watcher. Unlike the CLI, a bind failure (e.g. a port already in use) rejects
-the promise instead of exiting the process.
+the promise instead of exiting the process. A `port` passed to `serve()` is
+always treated as explicit — it never hops to another port.
 
 ## Features
 

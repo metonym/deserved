@@ -9,6 +9,7 @@ function makeOpts(root: string, overrides: Partial<Options> = {}): Options {
   return {
     root,
     port: 0,
+    portExplicit: false,
     host: "127.0.0.1",
     spa: false,
     watch: false,

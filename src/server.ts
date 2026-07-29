@@ -6,6 +6,7 @@ import { createHandler } from "./handlers";
 export type Options = {
   root: string;
   port: number;
+  portExplicit: boolean;
   host: string;
   spa: boolean;
   watch: boolean;
@@ -20,6 +21,7 @@ export type Options = {
 export const DEFAULT_OPTIONS = {
   root: ".",
   port: 3000,
+  portExplicit: false,
   host: "localhost",
   spa: false,
   watch: false,
@@ -50,6 +52,20 @@ export class BindError extends Error {
     super(`could not bind to ${host}:${port}`, options);
     this.name = "BindError";
   }
+}
+
+const MAX_PORT_FALLBACK_ATTEMPTS = 10;
+
+function isAddrInUseError(err: unknown): boolean {
+  if (
+    err &&
+    typeof err === "object" &&
+    "code" in err &&
+    err.code === "EADDRINUSE"
+  )
+    return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /EADDRINUSE|address already in use/i.test(message);
 }
 
 export const LIVE_PATH = "/__live.js";
@@ -243,27 +259,56 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
   // A literal loopback IP throws. Bind to 127.0.0.1 so a second instance fails cleanly.
   const bindHost = opts.host === "localhost" ? "127.0.0.1" : opts.host;
 
+  const serveFetch = async (req: Request) => {
+    if (opts.cors && req.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Headers": "*",
+          "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        },
+      });
+    }
+    return fetch(req);
+  };
+  const bindAt = (port: number) =>
+    Bun.serve({ port, hostname: bindHost, fetch: serveFetch });
+
+  // A default (non-explicit) port hops to the next free one instead of
+  // failing; an explicit --port (or port 0, "any free port") never does.
+  const canFallback = !opts.portExplicit && opts.port !== 0;
+
   let server: ReturnType<typeof Bun.serve>;
+  let boundPort = opts.port;
   try {
-    server = Bun.serve({
-      port: opts.port,
-      hostname: bindHost,
-      fetch: async (req) => {
-        if (opts.cors && req.method === "OPTIONS") {
-          return new Response(null, {
-            status: 204,
-            headers: {
-              "Access-Control-Allow-Origin": "*",
-              "Access-Control-Allow-Headers": "*",
-              "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-            },
-          });
-        }
-        return fetch(req);
-      },
-    });
+    server = bindAt(boundPort);
   } catch (err) {
-    throw new BindError(opts.host, opts.port, { cause: err });
+    if (!canFallback || !isAddrInUseError(err)) {
+      throw new BindError(opts.host, boundPort, { cause: err });
+    }
+
+    let fallback: ReturnType<typeof Bun.serve> | undefined;
+    let candidate = opts.port;
+    let lastErr: unknown = err;
+    for (let attempt = 1; attempt <= MAX_PORT_FALLBACK_ATTEMPTS; attempt++) {
+      candidate = opts.port + attempt;
+      try {
+        fallback = bindAt(candidate);
+        boundPort = candidate;
+        break;
+      } catch (retryErr) {
+        if (!isAddrInUseError(retryErr)) {
+          throw new BindError(opts.host, candidate, { cause: retryErr });
+        }
+        lastErr = retryErr;
+      }
+    }
+
+    if (!fallback)
+      throw new BindError(opts.host, candidate, { cause: lastErr });
+    server = fallback;
+    logInfo(`port ${opts.port} in use, using ${boundPort}`, opts.quiet);
   }
 
   const isWildcardHost = opts.host === "0.0.0.0" || opts.host === "::";
@@ -319,5 +364,6 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
 export async function serve(
   options: Partial<Options> = {},
 ): Promise<ServerHandle> {
-  return startServer({ ...DEFAULT_OPTIONS, ...options });
+  const portExplicit = options.portExplicit ?? options.port !== undefined;
+  return startServer({ ...DEFAULT_OPTIONS, ...options, portExplicit });
 }

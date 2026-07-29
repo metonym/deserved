@@ -17,7 +17,8 @@ function printHelp() {
     deserved [path] [options]
 
   Options
-    -p, --port <n>       Port (default: 3000)
+    -p, --port <n>       Port (default: 3000, or $PORT; hops to the next
+                          free port unless set explicitly)
     -H, --host <host>    Hostname (default: localhost)
     -s, --spa            SPA fallback to index.html
     -w, --watch          Live reload on file changes
@@ -38,13 +39,18 @@ function printHelp() {
     deserved dist --spa
     deserved dist --port 8080
     deserved docs --watch --open
+    PORT=8080 deserved dist
 `);
 }
 
-export function parseArgs(argv: string[]): Options {
+export function parseArgs(
+  argv: string[],
+  env: Record<string, string | undefined> = Bun.env,
+): Options {
   const args = argv.slice(2);
   const opts: Options = { ...DEFAULT_OPTIONS };
   let root = opts.root;
+  let portFlagSet = false;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -111,6 +117,7 @@ export function parseArgs(argv: string[]): Options {
       if (!Number.isInteger(n) || n < 0 || n > 65535)
         fail(`Invalid port: ${next}`);
       opts.port = n;
+      portFlagSet = true;
       continue;
     }
     if (a === "-H" || a === "--host") {
@@ -124,6 +131,7 @@ export function parseArgs(argv: string[]): Options {
       if (!Number.isInteger(n) || n < 0 || n > 65535)
         fail(`Invalid port: ${a}`);
       opts.port = n;
+      portFlagSet = true;
       continue;
     }
     if (a.startsWith("--host=")) {
@@ -135,6 +143,14 @@ export function parseArgs(argv: string[]): Options {
     }
     root = a;
   }
+
+  if (!portFlagSet && env.PORT !== undefined) {
+    const n = Number(env.PORT);
+    if (!Number.isInteger(n) || n < 0 || n > 65535)
+      fail(`Invalid port: ${env.PORT}`);
+    opts.port = n;
+  }
+  opts.portExplicit = portFlagSet;
 
   opts.root = resolve(root);
   return opts;

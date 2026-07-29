@@ -327,10 +327,47 @@ function resolveDirWithRoot(
   return null;
 }
 
-export function listDir(dir: string): { name: string; dir: boolean }[] {
+type DirEntry = {
+  name: string;
+  dir: boolean;
+  size: number | null;
+  mtimeMs: number | null;
+};
+
+function formatSize(bytes: number | null): string {
+  if (bytes === null) return "-";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(mtimeMs: number | null): string {
+  if (mtimeMs === null) return "-";
+  const d = new Date(mtimeMs);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const date = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${date} ${hours}:${minutes}`;
+}
+
+export function listDir(dir: string): DirEntry[] {
   return readdirSync(dir, { withFileTypes: true })
     .filter((e) => !e.name.startsWith("."))
-    .map((e) => ({ name: e.name, dir: e.isDirectory() }))
+    .map((e) => {
+      const isDir = e.isDirectory();
+      let size: number | null = null;
+      let mtimeMs: number | null = null;
+      if (!isDir) {
+        try {
+          const st = statSync(join(dir, e.name));
+          size = st.size;
+          mtimeMs = st.mtimeMs;
+        } catch {}
+      }
+      return { name: e.name, dir: isDir, size, mtimeMs };
+    })
     .sort((a, b) => {
       if (a.dir !== b.dir) return a.dir ? -1 : 1;
       return a.name.localeCompare(b.name);
@@ -339,7 +376,7 @@ export function listDir(dir: string): { name: string; dir: boolean }[] {
 
 export function directoryListing(
   pathname: string,
-  entries: { name: string; dir: boolean }[],
+  entries: DirEntry[],
 ): string {
   const base = pathname.endsWith("/") ? pathname : `${pathname}/`;
   const encodedBase = encodeUrlPath(base);
@@ -350,13 +387,15 @@ export function directoryListing(
       const href =
         joinUrl(encodedBase, encodeURIComponent(e.name)) + (e.dir ? "/" : "");
       const label = e.dir ? `${e.name}/` : e.name;
-      return `  <li><a href="${escapeHTML(href)}">${escapeHTML(label)}</a></li>`;
+      const size = formatSize(e.size);
+      const date = formatDate(e.mtimeMs);
+      return `  <li><a href="${escapeHTML(href)}">${escapeHTML(label)}</a> <span class="meta">${escapeHTML(size)}</span> <span class="meta">${escapeHTML(date)}</span></li>`;
     })
     .join("\n");
 
   const up =
     parent !== null
-      ? `  <li><a href="${escapeHTML(encodeUrlPath(parent))}">../</a></li>\n`
+      ? `  <li><a href="${escapeHTML(encodeUrlPath(parent))}">../</a> <span class="meta">-</span> <span class="meta">-</span></li>\n`
       : "";
 
   return `<!DOCTYPE html>
@@ -367,12 +406,13 @@ export function directoryListing(
   <title>Index of ${escapeHTML(pathname)}</title>
   <style>
     :root { color-scheme: light dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    body { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
     h1 { font-size: 1.1rem; font-weight: 600; }
     ul { list-style: none; padding: 0; }
-    li { padding: 0.2rem 0; }
-    a { color: inherit; text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    li { padding: 0.2rem 0; display: flex; gap: 2rem; }
+    li a { color: inherit; text-decoration: none; flex: 1; }
+    li a:hover { text-decoration: underline; }
+    .meta { text-align: right; min-width: 5rem; opacity: 0.6; }
   </style>
 </head>
 <body>

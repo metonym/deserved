@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHandler, directoryListing, listDir } from "../../src/handlers";
@@ -35,11 +41,56 @@ describe("listDir", () => {
       const entries = listDir(dir);
 
       expect(entries.some((e) => e.name === ".hidden")).toBe(false);
-      expect(entries).toEqual([
-        { name: "zdir", dir: true },
-        { name: "a.txt", dir: false },
-        { name: "b.txt", dir: false },
-      ]);
+      expect(entries.length).toBe(3);
+      expect(entries[0].name).toBe("zdir");
+      expect(entries[0].dir).toBe(true);
+      expect(entries[1].name).toBe("a.txt");
+      expect(entries[1].dir).toBe(false);
+      expect(entries[2].name).toBe("b.txt");
+      expect(entries[2].dir).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("includes size and mtime for files, nulls for dirs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "deserved-listdir-size-"));
+    try {
+      writeFileSync(join(dir, "file.txt"), "hello");
+      mkdirSync(join(dir, "subdir"));
+
+      const entries = listDir(dir);
+
+      const file = entries.find((e) => e.name === "file.txt");
+      expect(file).toBeDefined();
+      expect(file?.size).toBeGreaterThan(0);
+      expect(file?.mtimeMs).toBeGreaterThan(0);
+
+      const dirEntry = entries.find((e) => e.name === "subdir");
+      expect(dirEntry).toBeDefined();
+      expect(dirEntry?.size).toBeNull();
+      expect(dirEntry?.mtimeMs).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("handles broken symlinks gracefully", () => {
+    const dir = mkdtempSync(join(tmpdir(), "deserved-listdir-symlink-"));
+    try {
+      symlinkSync("/nonexistent/path", join(dir, "broken"));
+      writeFileSync(join(dir, "normal.txt"), "content");
+
+      const entries = listDir(dir);
+
+      const broken = entries.find((e) => e.name === "broken");
+      expect(broken).toBeDefined();
+      expect(broken?.size).toBeNull();
+      expect(broken?.mtimeMs).toBeNull();
+
+      const normal = entries.find((e) => e.name === "normal.txt");
+      expect(normal).toBeDefined();
+      expect(normal?.size).toBeGreaterThan(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -49,8 +100,13 @@ describe("listDir", () => {
 describe("directoryListing", () => {
   test("escapes HTML-special characters in filenames", () => {
     const html = directoryListing("/uploads/", [
-      { name: "<script>alert(1)</script>.txt", dir: false },
-      { name: 'quote"and&amp.txt', dir: false },
+      {
+        name: "<script>alert(1)</script>.txt",
+        dir: false,
+        size: 100,
+        mtimeMs: 1000000,
+      },
+      { name: 'quote"and&amp.txt', dir: false, size: 200, mtimeMs: 2000000 },
     ]);
 
     expect(html).not.toContain("<script>alert(1)</script>.txt");
@@ -66,8 +122,8 @@ describe("directoryListing", () => {
 
   test("links each entry relative to the current directory, with a trailing slash for dirs", () => {
     const html = directoryListing("/docs", [
-      { name: "guide.md", dir: false },
-      { name: "assets", dir: true },
+      { name: "guide.md", dir: false, size: 100, mtimeMs: 1000000 },
+      { name: "assets", dir: true, size: null, mtimeMs: null },
     ]);
 
     expect(html).toContain('href="/docs/guide.md"');
@@ -81,9 +137,9 @@ describe("directoryListing", () => {
 
   test("URI-encodes hrefs for names with #, ?, %, or spaces", () => {
     const html = directoryListing("/", [
-      { name: "a#b.txt", dir: false },
-      { name: "a?b.txt", dir: false },
-      { name: "100% real.txt", dir: false },
+      { name: "a#b.txt", dir: false, size: 100, mtimeMs: 1000000 },
+      { name: "a?b.txt", dir: false, size: 100, mtimeMs: 1000000 },
+      { name: "100% real.txt", dir: false, size: 100, mtimeMs: 1000000 },
     ]);
 
     expect(html).toContain('href="/a%23b.txt"');
@@ -93,6 +149,36 @@ describe("directoryListing", () => {
     expect(html).toContain(">a#b.txt<");
     expect(html).toContain(">a?b.txt<");
     expect(html).toContain(">100% real.txt<");
+  });
+
+  test("renders file sizes in human format (B, kB, MB)", () => {
+    const html = directoryListing("/", [
+      { name: "tiny.txt", dir: false, size: 500, mtimeMs: 1000000 },
+      { name: "medium.txt", dir: false, size: 50000, mtimeMs: 1000000 },
+      { name: "large.txt", dir: false, size: 5000000, mtimeMs: 1000000 },
+    ]);
+
+    expect(html).toContain("500 B");
+    expect(html).toContain("48.8 kB");
+    expect(html).toContain("4.8 MB");
+  });
+
+  test("renders dirs and nulls as dash", () => {
+    const html = directoryListing("/", [
+      { name: "subdir", dir: true, size: null, mtimeMs: null },
+      { name: "broken", dir: false, size: null, mtimeMs: null },
+    ]);
+
+    expect(html).toContain('<span class="meta">-</span>');
+  });
+
+  test("renders dates in YYYY-MM-DD HH:mm format", () => {
+    const mtimeMs = new Date("2025-01-15T14:30:00Z").getTime();
+    const html = directoryListing("/", [
+      { name: "file.txt", dir: false, size: 100, mtimeMs },
+    ]);
+
+    expect(html).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
   });
 
   test("round-trip: an encoded href for a % name is fetchable through the handler", async () => {

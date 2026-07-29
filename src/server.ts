@@ -89,6 +89,22 @@ export function injectLiveReload(html: string): string {
 export function createSseHub() {
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
+  const PING = encoder.encode(": ping\n\n");
+
+  // Bun force-closes a connection after ~10s of no traffic, which would
+  // otherwise kill an idle browser tab's SSE stream and trigger its
+  // onerror reload fallback. Keep it warm so it only ever closes when we
+  // close it (broadcast or shutdown).
+  const heartbeat = setInterval(() => {
+    for (const c of clients) {
+      try {
+        c.enqueue(PING);
+      } catch {
+        clients.delete(c);
+      }
+    }
+  }, 8000);
+  heartbeat.unref();
 
   function subscribe(): Response {
     let controller: ReadableStreamDefaultController<Uint8Array>;
@@ -124,7 +140,17 @@ export function createSseHub() {
     }
   }
 
-  return { subscribe, broadcast };
+  function close() {
+    clearInterval(heartbeat);
+    for (const c of clients) {
+      try {
+        c.close();
+      } catch {}
+    }
+    clients.clear();
+  }
+
+  return { subscribe, broadcast, close };
 }
 
 const c = {
@@ -351,7 +377,9 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
 
   const stop = async () => {
     watcher?.close();
+    hub?.close();
     await server.stop();
+    logInfo("server stopped", opts.quiet);
   };
 
   if (opts.open) {

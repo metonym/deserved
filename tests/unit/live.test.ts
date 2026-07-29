@@ -1,5 +1,10 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { injectLiveReload, LIVE_PATH, logRequest } from "../../src/server";
+import {
+  injectLiveReload,
+  LIVE_PATH,
+  LIVE_SCRIPT,
+  logRequest,
+} from "../../src/server";
 
 describe("injectLiveReload", () => {
   test("injects before </body>", () => {
@@ -10,6 +15,25 @@ describe("injectLiveReload", () => {
   test("appends when there is no body tag", () => {
     const out = injectLiveReload("<h1>x</h1>");
     expect(out.endsWith(`<script src="${LIVE_PATH}"></script>`)).toBe(true);
+  });
+});
+
+describe("LIVE_SCRIPT", () => {
+  test("hot-swaps stylesheets on a css message instead of reloading", () => {
+    expect(LIVE_SCRIPT).toContain('m.data==="css"');
+    expect(LIVE_SCRIPT).toContain(
+      "querySelectorAll('link[rel=\"stylesheet\"]')",
+    );
+  });
+
+  test("falls back to a full reload for any non-css message", () => {
+    expect(LIVE_SCRIPT).toContain("location.reload()");
+  });
+
+  test("keeps the onerror reconnect-then-reload behavior", () => {
+    expect(LIVE_SCRIPT).toContain(
+      "e.onerror=()=>{e.close();setTimeout(()=>location.reload(),1000)}",
+    );
   });
 });
 

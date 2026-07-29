@@ -71,6 +71,7 @@ the promise instead of exiting the process.
 - Range requests (`206`) for media
 - SPA mode (HTML Accept only; assets still 404)
 - Optional live reload (`--watch`) via Server-Sent Events
+- CSS-only changes hot-swap stylesheets in place instead of a full page reload
 - Gzip compression
 - Cache headers off by default (`no-cache`); opt in per-run with `--cache` for long-lived, immutable asset caching
 - Directory listings (disable with `--no-dir`)

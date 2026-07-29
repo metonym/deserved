@@ -48,7 +48,7 @@ export class BindError extends Error {
 export const LIVE_PATH = "/__live.js";
 export const EVENTS_PATH = "/__events";
 
-export const LIVE_SCRIPT = `(()=>{const e=new EventSource("${EVENTS_PATH}");e.onmessage=()=>location.reload();e.onerror=()=>{e.close();setTimeout(()=>location.reload(),1000)}})()`;
+export const LIVE_SCRIPT = `(()=>{const e=new EventSource("${EVENTS_PATH}");e.onmessage=(m)=>{if(m.data==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=l.href.split("?")[0];l.href=h+"?t="+Date.now()}}else{location.reload()}};e.onerror=()=>{e.close();setTimeout(()=>location.reload(),1000)}})()`;
 
 const INJECT = `<script src="${LIVE_PATH}"></script>`;
 
@@ -150,6 +150,11 @@ export function isIgnoredWatchPath(filename: string): boolean {
     .some((segment) => segment.startsWith(".") || segment === "node_modules");
 }
 
+export function classifyBatch(files: (string | null)[]): "css" | "reload" {
+  if (files.length === 0) return "reload";
+  return files.every((f) => f?.endsWith(".css")) ? "css" : "reload";
+}
+
 function lanAddress(): string | null {
   const nets = networkInterfaces();
   for (const iface of Object.values(nets)) {
@@ -180,9 +185,9 @@ function logBanner(
   console.log();
 }
 
-function logReload(quiet: boolean) {
+function logReload(quiet: boolean, kind: "css" | "reload") {
   if (quiet) return;
-  console.log(`${c.yellow}*${c.reset} reload`);
+  console.log(`${c.yellow}*${c.reset} ${kind}`);
 }
 
 async function openBrowser(url: string): Promise<void> {
@@ -256,15 +261,19 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
   let watcher: ReturnType<typeof watch> | undefined;
   if (opts.watch && hub) {
     let timer: Timer | null = null;
+    const batch = new Set<string | null>();
     watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (filename && isIgnoredWatchPath(filename)) return;
       // Clear before debouncing the reload broadcast, so a request racing
       // the debounce window still sees the post-change resolution state.
       fetch.invalidateResolutionCache();
+      batch.add(filename);
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        logReload(opts.quiet);
-        hub.broadcast("reload");
+        const kind = classifyBatch([...batch]);
+        batch.clear();
+        logReload(opts.quiet, kind);
+        hub.broadcast(kind);
       }, 80);
     });
 

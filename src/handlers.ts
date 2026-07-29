@@ -21,6 +21,12 @@ export type ResolvedFile = {
   kind: "file" | "html-ext" | "dir-index";
 };
 
+export type Handler = {
+  (req: Request): Promise<Response>;
+  invalidateResolutionCache(): void;
+  resolutionCacheSize(): number;
+};
+
 type Hub = ReturnType<typeof createSseHub>;
 
 const encoder = new TextEncoder();
@@ -166,6 +172,73 @@ function resolveFileWithRoot(
   }
 
   return null;
+}
+
+// Cap on distinct pathnames tracked per handler; cleared wholesale past
+// this rather than evicted LRU-style -- simpler, and a dev server only
+// ever probes as many distinct paths as a human clicks through.
+export const RESOLUTION_CACHE_LIMIT = 4096;
+
+// Bounds staleness in non-watch mode: a newly-created or newly-deleted
+// candidate (e.g. adding about.html for a pathname previously cached as a
+// 404) becomes visible within this window. Half the ~1s ceiling this node
+// targets, so it stays comfortably inside that budget while still
+// amortizing across the many requests a benchmark (or a browser loading a
+// page's assets) fires in a burst.
+export const RESOLUTION_TTL_MS = 500;
+
+type CachedResolution = { real: string; kind: ResolvedFile["kind"] } | null;
+
+// Remembers which candidate (if any) a pathname resolves to, so a repeat
+// request skips the safeJoin + realpath containment walk across up to 3
+// candidates -- the dominant cost of a 404 probe. Deliberately does NOT
+// cache size/mtime: a cache hit always re-stats the winning candidate, so
+// content edits are visible on the very next request regardless of TTL or
+// --watch. Only *which file wins* (or whether one exists at all) can go
+// stale, and that's bounded by watch invalidation or RESOLUTION_TTL_MS. If
+// the cached candidate no longer stats as a file (deleted, replaced by a
+// dir, symlink now escapes root), resolution falls through and re-probes
+// for real instead of trusting the stale entry.
+function createResolutionCache(
+  rootAbs: string,
+  realRoot: string | null,
+  watch: boolean,
+) {
+  const cache = new Map<string, { value: CachedResolution; at: number }>();
+
+  function resolveCached(pathname: string): ResolvedFile | null {
+    const cached = cache.get(pathname);
+    if (cached && (watch || Date.now() - cached.at < RESOLUTION_TTL_MS)) {
+      if (cached.value === null) return null;
+      try {
+        const st = statSync(cached.value.real);
+        if (st.isFile()) {
+          return {
+            path: cached.value.real,
+            file: Bun.file(cached.value.real),
+            size: st.size,
+            mtimeMs: st.mtimeMs,
+            kind: cached.value.kind,
+          };
+        }
+      } catch {}
+      // Cached winner disappeared or changed kind -- re-probe below.
+    }
+
+    const resolved = resolveFileWithRoot(rootAbs, realRoot, pathname);
+    if (cache.size >= RESOLUTION_CACHE_LIMIT) cache.clear();
+    cache.set(pathname, {
+      value: resolved ? { real: resolved.path, kind: resolved.kind } : null,
+      at: Date.now(),
+    });
+    return resolved;
+  }
+
+  return {
+    resolveCached,
+    invalidate: () => cache.clear(),
+    size: () => cache.size,
+  };
 }
 
 function candidateKind(candidate: string): ResolvedFile["kind"] {
@@ -327,21 +400,26 @@ function joinUrl(base: string, name: string): string {
   return `${base.replace(/\/+$/, "")}/${name}`;
 }
 
-export function createHandler(opts: Options, hub?: Hub) {
+export function createHandler(opts: Options, hub?: Hub): Handler {
   const rootAbs = resolve(opts.root);
   const realRoot = realpathRoot(rootAbs);
+  const resolution = createResolutionCache(rootAbs, realRoot, opts.watch);
 
-  return async function handle(req: Request): Promise<Response> {
+  const handle = async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const method = req.method.toUpperCase();
 
     let pathname: string;
-    try {
-      pathname = decodeURIComponent(url.pathname);
-    } catch {
-      const res = new Response("Bad Request", { status: 400 });
-      logRequest(method, 400, url.pathname, opts.quiet);
-      return headify(method, withCors(res, opts));
+    if (url.pathname.includes("%")) {
+      try {
+        pathname = decodeURIComponent(url.pathname);
+      } catch {
+        const res = new Response("Bad Request", { status: 400 });
+        logRequest(method, 400, url.pathname, opts.quiet);
+        return headify(method, withCors(res, opts));
+      }
+    } else {
+      pathname = url.pathname;
     }
 
     try {
@@ -354,6 +432,7 @@ export function createHandler(opts: Options, hub?: Hub) {
         hub,
         rootAbs,
         realRoot,
+        resolution.resolveCached,
       );
     } catch (err) {
       console.error(err);
@@ -361,7 +440,11 @@ export function createHandler(opts: Options, hub?: Hub) {
       logRequest(method, 500, url.pathname, opts.quiet);
       return headify(method, withCors(res, opts));
     }
-  };
+  } as Handler;
+
+  handle.invalidateResolutionCache = resolution.invalidate;
+  handle.resolutionCacheSize = resolution.size;
+  return handle;
 }
 
 function directoryRedirect(url: URL, opts: Options): Response {
@@ -382,6 +465,7 @@ async function handleDecoded(
   hub: Hub | undefined,
   rootAbs: string,
   realRoot: string | null,
+  resolveCached: (pathname: string) => ResolvedFile | null,
 ): Promise<Response> {
   const send = (res: Response) => {
     logRequest(method, res.status, pathname, opts.quiet);
@@ -421,7 +505,7 @@ async function handleDecoded(
     );
   }
 
-  const resolved = resolveFileWithRoot(rootAbs, realRoot, pathname);
+  const resolved = resolveCached(pathname);
 
   if (resolved) {
     if (resolved.kind === "dir-index" && !pathname.endsWith("/")) {
@@ -434,7 +518,7 @@ async function handleDecoded(
   }
 
   if (opts.spa && acceptsHtml(req) && shouldSpaFallback(pathname)) {
-    const index = resolveFileWithRoot(rootAbs, realRoot, "/");
+    const index = resolveCached("/");
     if (index) {
       const res = await serveFile(req, index, opts, true);
       return send(res);
@@ -463,7 +547,7 @@ async function handleDecoded(
   }
 
   if (acceptsHtml(req)) {
-    const notFoundPage = resolveFileWithRoot(rootAbs, realRoot, "/404.html");
+    const notFoundPage = resolveCached("/404.html");
     if (notFoundPage) {
       const html = await notFoundPage.file.text();
       // Error pages are small; skip compression to keep this path simple.

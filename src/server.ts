@@ -258,6 +258,9 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
     let timer: Timer | null = null;
     watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (filename && isIgnoredWatchPath(filename)) return;
+      // Clear before debouncing the reload broadcast, so a request racing
+      // the debounce window still sees the post-change resolution state.
+      fetch.invalidateResolutionCache();
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         logReload(opts.quiet);

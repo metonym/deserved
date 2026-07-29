@@ -1,8 +1,18 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHandler } from "../../src/handlers";
+import {
+  createHandler,
+  RESOLUTION_CACHE_LIMIT,
+  RESOLUTION_TTL_MS,
+} from "../../src/handlers";
 import type { Options } from "../../src/server";
 import { formatUrl } from "../../src/server";
 
@@ -130,4 +140,140 @@ describe("formatUrl", () => {
   test("IPv6 host is bracketed", () => {
     expect(formatUrl("::1", 3000)).toBe("http://[::1]:3000");
   });
+});
+
+describe("resolution cache: content freshness", () => {
+  test("an edit is visible on the very next request, watch or not", async () => {
+    for (const watch of [false, true]) {
+      const root = mkdtempSync(join(tmpdir(), "rescache-fresh-"));
+      try {
+        const path = join(root, "file.txt");
+        writeFileSync(path, "before");
+        const handle = createHandler(makeOpts(root, { watch }));
+
+        const first = await handle(new Request("http://x/file.txt"));
+        expect(await first.text()).toBe("before");
+
+        writeFileSync(path, "after");
+        const second = await handle(new Request("http://x/file.txt"));
+        expect(await second.text()).toBe("after");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+});
+
+describe("resolution cache: watch-mode invalidation", () => {
+  test("a newly created file stays 404 until invalidation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rescache-watch-new-"));
+    try {
+      const handle = createHandler(makeOpts(root, { watch: true }));
+
+      const before = await handle(new Request("http://x/new.txt"));
+      expect(before.status).toBe(404);
+
+      writeFileSync(join(root, "new.txt"), "hello");
+
+      const stillCached = await handle(new Request("http://x/new.txt"));
+      expect(stillCached.status).toBe(404);
+
+      handle.invalidateResolutionCache();
+
+      const afterInvalidate = await handle(new Request("http://x/new.txt"));
+      expect(afterInvalidate.status).toBe(200);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a symlink swapped in after caching is rejected once invalidated", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rescache-watch-poison-"));
+    const outside = mkdtempSync(join(tmpdir(), "rescache-watch-outside-"));
+    try {
+      writeFileSync(join(outside, "secret.txt"), "top secret");
+      writeFileSync(join(root, "target.txt"), "safe content");
+
+      const handle = createHandler(makeOpts(root, { watch: true }));
+      const first = await handle(new Request("http://x/target.txt"));
+      expect(first.status).toBe(200);
+      expect(await first.text()).toBe("safe content");
+
+      unlinkSync(join(root, "target.txt"));
+      symlinkSync(join(outside, "secret.txt"), join(root, "target.txt"));
+      handle.invalidateResolutionCache();
+
+      const afterSwap = await handle(new Request("http://x/target.txt"));
+      expect(afterSwap.status).toBe(404);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolution cache: non-watch TTL", () => {
+  test("a newly created file stays 404 until the TTL expires", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rescache-ttl-new-"));
+    try {
+      const handle = createHandler(makeOpts(root, { watch: false }));
+
+      const before = await handle(new Request("http://x/new.txt"));
+      expect(before.status).toBe(404);
+
+      writeFileSync(join(root, "new.txt"), "hello");
+
+      const stillCached = await handle(new Request("http://x/new.txt"));
+      expect(stillCached.status).toBe(404);
+
+      await Bun.sleep(RESOLUTION_TTL_MS + 150);
+
+      const afterExpiry = await handle(new Request("http://x/new.txt"));
+      expect(afterExpiry.status).toBe(200);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 5000);
+
+  test("a symlink swapped in after caching is rejected once the TTL expires", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rescache-ttl-poison-"));
+    const outside = mkdtempSync(join(tmpdir(), "rescache-ttl-outside-"));
+    try {
+      writeFileSync(join(outside, "secret.txt"), "top secret");
+      writeFileSync(join(root, "target.txt"), "safe content");
+
+      const handle = createHandler(makeOpts(root, { watch: false }));
+      const first = await handle(new Request("http://x/target.txt"));
+      expect(first.status).toBe(200);
+      expect(await first.text()).toBe("safe content");
+
+      unlinkSync(join(root, "target.txt"));
+      symlinkSync(join(outside, "secret.txt"), join(root, "target.txt"));
+
+      await Bun.sleep(RESOLUTION_TTL_MS + 150);
+
+      const afterSwap = await handle(new Request("http://x/target.txt"));
+      expect(afterSwap.status).toBe(404);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  }, 5000);
+});
+
+describe("resolution cache: memory bound", () => {
+  test("5000 distinct misses do not grow the cache unbounded", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rescache-cap-"));
+    try {
+      const handle = createHandler(makeOpts(root));
+      for (let i = 0; i < 5000; i++) {
+        await handle(new Request(`http://x/missing-${i}`));
+      }
+      expect(handle.resolutionCacheSize()).toBeLessThanOrEqual(
+        RESOLUTION_CACHE_LIMIT,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20000);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { serve } from "../../src/index";
 
@@ -88,6 +88,48 @@ describe("serve()", () => {
     } finally {
       await first.stop();
       removeFixture(root);
+    }
+  });
+});
+
+describe("serve() root validation", () => {
+  test("missing directory rejects with error containing 'directory not found'", async () => {
+    const missingPath = join(fixtureDir("base"), "nonexistent");
+
+    await expect(
+      serve({ root: missingPath, port: 0, quiet: true }),
+    ).rejects.toThrow(/directory not found/);
+  });
+
+  test("file instead of directory rejects with error containing 'not a directory'", async () => {
+    const root = fixtureDir("file-root");
+    const filePath = join(root, "file.txt");
+    writeFileSync(filePath, "content");
+
+    await expect(
+      serve({ root: filePath, port: 0, quiet: true }),
+    ).rejects.toThrow(/not a directory/);
+
+    removeFixture(root);
+  });
+
+  test("symlinked directory to valid location works", async () => {
+    const base = fixtureDir("symlink-base");
+    const actualDir = join(base, "actual");
+    mkdirSync(actualDir);
+    writeFileSync(join(actualDir, "index.html"), "<h1>via symlink</h1>");
+
+    const linkDir = join(base, "link");
+    symlinkSync(actualDir, linkDir);
+
+    const server = await serve({ root: linkDir, port: 0, quiet: true });
+    try {
+      const res = await fetch(`${server.url}/`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("<h1>via symlink</h1>");
+    } finally {
+      await server.stop();
+      removeFixture(base);
     }
   });
 });

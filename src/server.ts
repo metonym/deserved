@@ -1,4 +1,4 @@
-import { watch } from "node:fs";
+import { statSync, watch } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { relative, resolve } from "node:path";
 import { createHandler } from "./handlers";
@@ -37,6 +37,13 @@ export type ServerHandle = {
   url: string;
   stop: () => Promise<void>;
 };
+
+export class RootError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RootError";
+  }
+}
 
 export class BindError extends Error {
   constructor(host: string, port: number, options?: ErrorOptions) {
@@ -205,8 +212,25 @@ async function openBrowser(url: string): Promise<void> {
   }
 }
 
+function validateRoot(rootPath: string): void {
+  try {
+    const st = statSync(rootPath);
+    if (!st.isDirectory()) {
+      throw new RootError(`not a directory: ${rootPath}`);
+    }
+  } catch (err) {
+    if (err instanceof RootError) throw err;
+    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
+      throw new RootError(`directory not found: ${rootPath}`);
+    }
+    throw new RootError(`not a directory: ${rootPath}`);
+  }
+}
+
 export async function startServer(opts: Options): Promise<ServerHandle> {
   const root = resolve(opts.root);
+  validateRoot(root);
+
   const hub = opts.watch ? createSseHub() : undefined;
   const fetch = createHandler({ ...opts, root }, hub);
 

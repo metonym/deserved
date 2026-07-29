@@ -1,13 +1,29 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>about</title>
-    <link rel="stylesheet" href="/assets/style.css" />
-  </head>
-  <body>
-    <h1>about</h1>
-    <p><a href="/">home</a></p>
-    <p>Static nested page (<code>about/index.html</code>).</p>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>About - deserved demo</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <h1>About</h1>
+  <p>
+    <a href="/">home</a> ·
+    <a href="/about/">about</a> ·
+    <a href="/app/">spa</a> ·
+    <a href="/app/settings">spa deep link</a> ·
+    <a href="/assets/">assets</a>
+  </p>
+  <p><strong>deserved</strong> is a tiny, zero-dependency Bun static file server.</p>
+  <h2>Key features</h2>
+  <ul>
+    <li>Directory listings with file sizes and modification times</li>
+    <li>Live reload via Server-Sent Events (SSE)</li>
+    <li>CSS-only hot-swap for stylesheet changes</li>
+    <li>SPA mode with fallback to index.html</li>
+    <li>Range requests for media files</li>
+    <li>Gzip compression</li>
+  </ul>
+</body>
 </html>

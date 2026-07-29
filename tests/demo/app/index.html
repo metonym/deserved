@@ -1,40 +1,78 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>spa</title>
-    <link rel="stylesheet" href="/assets/style.css" />
-  </head>
-  <body>
-    <h1>spa</h1>
-    <p>
-      <a href="/">site home</a> ·
-      <a href="/app/" data-link>spa home</a> ·
-      <a href="/app/settings" data-link>settings</a> ·
-      <a href="/app/profile" data-link>profile</a>
-    </p>
-    <div id="view"></div>
-    <script>
-      const routes = {
-        "/app": "spa home",
-        "/app/": "spa home",
-        "/app/settings": "settings — needs --spa on refresh",
-        "/app/profile": "profile — needs --spa on refresh",
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SPA Demo - deserved</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <style>
+    nav { margin-bottom: 2rem; }
+    nav a { margin-right: 1rem; }
+    #app { border: 1px solid #ddd; padding: 1.5rem; border-radius: 6px; background: #fafafa; }
+    .view { display: none; }
+    .view.active { display: block; }
+  </style>
+</head>
+<body>
+  <h1>Single-Page App</h1>
+  <nav>
+    <a href="/">home</a> ·
+    <a href="/about/">about</a> ·
+    <a href="/app/">spa</a> ·
+    <a href="/app/settings">spa deep link</a> ·
+    <a href="/assets/">assets</a>
+  </nav>
+
+  <div id="app">
+    <div id="home" class="view active">
+      <h2>Home</h2>
+      <p>Welcome to the SPA demo. Run with <code>bun demo:spa</code> to enable SPA mode.</p>
+      <p>Notice: deep links like <a href="/app/settings">settings</a> load without a full page reload.</p>
+    </div>
+
+    <div id="settings" class="view">
+      <h2>Settings</h2>
+      <p>This is a deep link view. You can navigate here via URL without reloading.</p>
+      <p>Try editing <code>tests/demo/assets/style.css</code> and watch it update live.</p>
+    </div>
+
+    <div id="404" class="view">
+      <h2>Not Found</h2>
+      <p>The route you requested doesn't exist in this demo.</p>
+    </div>
+  </div>
+
+  <script>
+    const routes = {
+      '/app/': 'home',
+      '/app/settings': 'settings',
+    };
+
+    function renderRoute(pathname) {
+      const viewId = routes[pathname] || '404';
+      for (const v of document.querySelectorAll('.view')) {
+        v.classList.remove('active');
       }
-      const view = document.getElementById("view")
-      function render() {
-        const path = location.pathname
-        view.textContent = routes[path] ?? `no route: ${path}`
-      }
-      document.addEventListener("click", (e) => {
-        const a = e.target.closest("a[data-link]")
-        if (!a) return
-        e.preventDefault()
-        history.pushState(null, "", a.getAttribute("href"))
-        render()
-      })
-      window.addEventListener("popstate", render)
-      render()
-    </script>
-  </body>
+      const view = document.getElementById(viewId);
+      if (view) view.classList.add('active');
+      document.title = viewId === 'home' ? 'SPA Demo' : `${viewId} - SPA Demo`;
+    }
+
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest('a');
+      if (!link) return;
+      const href = link.getAttribute('href');
+      if (!href.startsWith('/app/')) return;
+      e.preventDefault();
+      history.pushState({}, '', href);
+      renderRoute(href);
+    });
+
+    window.addEventListener('popstate', () => {
+      renderRoute(window.location.pathname);
+    });
+
+    renderRoute(window.location.pathname);
+  </script>
+</body>
 </html>

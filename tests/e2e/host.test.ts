@@ -36,7 +36,7 @@ describe("e2e host / root resolution", () => {
     }
   });
 
-  test("a nonexistent root starts cleanly and 404s every request", async () => {
+  test("a nonexistent root exits with error immediately", async () => {
     const port = await freePort();
     const proc = Bun.spawn(
       [
@@ -53,18 +53,16 @@ describe("e2e host / root resolution", () => {
     );
 
     try {
-      const base = `http://127.0.0.1:${port}`;
-      const deadline = Date.now() + 5000;
-      let res: Response | null = null;
+      const deadline = Date.now() + 1000;
       while (Date.now() < deadline) {
-        try {
-          res = await fetch(base, { signal: AbortSignal.timeout(200) });
+        if (proc.exitCode !== null) {
           break;
-        } catch {
-          await Bun.sleep(40);
         }
+        await Bun.sleep(10);
       }
-      expect(res?.status).toBe(404);
+      expect(proc.exitCode).toBe(1);
+      const err = await new Response(proc.stderr).text();
+      expect(err).toContain("directory not found");
     } finally {
       proc.kill();
     }

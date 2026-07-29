@@ -5,6 +5,7 @@ import {
   BindError,
   DEFAULT_OPTIONS,
   type Options,
+  RootError,
   startServer,
 } from "./server";
 
@@ -152,6 +153,11 @@ if (import.meta.main) {
   try {
     handle = await startServer(opts);
   } catch (err) {
+    if (err instanceof RootError) {
+      console.error(`Error: ${err.message}`);
+      console.error("Run deserved --help.");
+      process.exit(1);
+    }
     if (err instanceof BindError) {
       console.error(`Error: ${err.message}`);
       console.error(

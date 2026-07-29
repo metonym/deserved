@@ -10,6 +10,7 @@
   "scripts": {
     "start": "bun src/cli.ts",
     "build": "bun scripts/build.ts",
+    "bench": "bun scripts/bench.ts",
     "typecheck": "tsc",
     "lint": "biome check .",
     "lint:fix": "biome check --write . --unsafe",

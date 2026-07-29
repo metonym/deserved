@@ -17,6 +17,34 @@ export type Options = {
   quiet: boolean;
 };
 
+export const DEFAULT_OPTIONS = {
+  root: ".",
+  port: 3000,
+  host: "localhost",
+  spa: false,
+  watch: false,
+  open: false,
+  cors: false,
+  dir: true,
+  cache: false,
+  compress: true,
+  quiet: false,
+} satisfies Options;
+
+export type ServerHandle = {
+  port: number;
+  hostname: string;
+  url: string;
+  stop: () => Promise<void>;
+};
+
+export class BindError extends Error {
+  constructor(host: string, port: number, options?: ErrorOptions) {
+    super(`could not bind to ${host}:${port}`, options);
+    this.name = "BindError";
+  }
+}
+
 export const LIVE_PATH = "/__live.js";
 export const EVENTS_PATH = "/__events";
 
@@ -177,7 +205,7 @@ async function openBrowser(url: string): Promise<void> {
   }
 }
 
-export async function startServer(opts: Options) {
+export async function startServer(opts: Options): Promise<ServerHandle> {
   const root = resolve(opts.root);
   const hub = opts.watch ? createSseHub() : undefined;
   const fetch = createHandler({ ...opts, root }, hub);
@@ -206,9 +234,7 @@ export async function startServer(opts: Options) {
       },
     });
   } catch (err) {
-    console.error(`Error: could not bind to ${opts.host}:${opts.port}`);
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
+    throw new BindError(opts.host, opts.port, { cause: err });
   }
 
   const isWildcardHost = opts.host === "0.0.0.0" || opts.host === "::";
@@ -242,17 +268,20 @@ export async function startServer(opts: Options) {
     logInfo("watching for changes", opts.quiet);
   }
 
-  const shutdown = async () => {
+  const stop = async () => {
     watcher?.close();
     await server.stop();
-    process.exit(0);
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 
   if (opts.open) {
     await openBrowser(url);
   }
 
-  return server;
+  return { port: server.port ?? opts.port, hostname: displayHost, url, stop };
+}
+
+export async function serve(
+  options: Partial<Options> = {},
+): Promise<ServerHandle> {
+  return startServer({ ...DEFAULT_OPTIONS, ...options });
 }

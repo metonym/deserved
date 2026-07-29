@@ -48,6 +48,22 @@ bunx deserved dist --cors
 bunx deserved dist --watch
 ```
 
+## Programmatic use
+
+```ts
+import { serve } from "deserved";
+
+const server = await serve({ root: "dist", port: 0, quiet: true });
+console.log(server.url);
+await server.stop();
+```
+
+`serve()` accepts a `Partial<Options>`, merged over the same defaults as the
+CLI (`DEFAULT_OPTIONS`). It resolves to `{ port, hostname, url, stop() }`;
+`stop()` closes the server and, if `watch: true` was passed, the file
+watcher. Unlike the CLI, a bind failure (e.g. a port already in use) rejects
+the promise instead of exiting the process.
+
 ## Features
 
 - `Bun.file()` / `Bun.serve()`: no streams plumbing

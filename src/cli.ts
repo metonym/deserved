@@ -1,7 +1,12 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
 import { version as VERSION } from "../package.json";
-import { type Options, startServer } from "./server";
+import {
+  BindError,
+  DEFAULT_OPTIONS,
+  type Options,
+  startServer,
+} from "./server";
 
 function printHelp() {
   console.log(`
@@ -37,17 +42,8 @@ function printHelp() {
 
 export function parseArgs(argv: string[]): Options {
   const args = argv.slice(2);
-  let root = ".";
-  let port = 3000;
-  let host = "localhost";
-  let spa = false;
-  let watch = false;
-  let open = false;
-  let cors = false;
-  let dir = true;
-  let cache = false;
-  let compress = true;
-  let quiet = false;
+  const opts: Options = { ...DEFAULT_OPTIONS };
+  let root = opts.root;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -62,47 +58,47 @@ export function parseArgs(argv: string[]): Options {
       process.exit(0);
     }
     if (a === "-s" || a === "--spa") {
-      spa = true;
+      opts.spa = true;
       continue;
     }
     if (a === "-w" || a === "--watch") {
-      watch = true;
+      opts.watch = true;
       continue;
     }
     if (a === "-o" || a === "--open") {
-      open = true;
+      opts.open = true;
       continue;
     }
     if (a === "--cors") {
-      cors = true;
+      opts.cors = true;
       continue;
     }
     if (a === "--dir") {
-      dir = true;
+      opts.dir = true;
       continue;
     }
     if (a === "--no-dir") {
-      dir = false;
+      opts.dir = false;
       continue;
     }
     if (a === "--cache") {
-      cache = true;
+      opts.cache = true;
       continue;
     }
     if (a === "--no-cache") {
-      cache = false;
+      opts.cache = false;
       continue;
     }
     if (a === "--compress") {
-      compress = true;
+      opts.compress = true;
       continue;
     }
     if (a === "--no-compress") {
-      compress = false;
+      opts.compress = false;
       continue;
     }
     if (a === "-q" || a === "--quiet") {
-      quiet = true;
+      opts.quiet = true;
       continue;
     }
     if (a === "-p" || a === "--port") {
@@ -113,24 +109,24 @@ export function parseArgs(argv: string[]): Options {
       const n = Number(next);
       if (!Number.isInteger(n) || n < 0 || n > 65535)
         fail(`Invalid port: ${next}`);
-      port = n;
+      opts.port = n;
       continue;
     }
     if (a === "-H" || a === "--host") {
       const next = args[++i];
       if (!next || next.startsWith("-")) fail(`Missing value for ${a}`);
-      host = next;
+      opts.host = next;
       continue;
     }
     if (a.startsWith("--port=")) {
       const n = Number(a.slice("--port=".length));
       if (!Number.isInteger(n) || n < 0 || n > 65535)
         fail(`Invalid port: ${a}`);
-      port = n;
+      opts.port = n;
       continue;
     }
     if (a.startsWith("--host=")) {
-      host = a.slice("--host=".length);
+      opts.host = a.slice("--host=".length);
       continue;
     }
     if (a.startsWith("-")) {
@@ -139,19 +135,8 @@ export function parseArgs(argv: string[]): Options {
     root = a;
   }
 
-  return {
-    root: resolve(root),
-    port,
-    host,
-    spa,
-    watch,
-    open,
-    cors,
-    dir,
-    cache,
-    compress,
-    quiet,
-  };
+  opts.root = resolve(root);
+  return opts;
 }
 
 function fail(msg: string): never {
@@ -162,5 +147,25 @@ function fail(msg: string): never {
 
 if (import.meta.main) {
   const opts = parseArgs(process.argv);
-  await startServer(opts);
+
+  let handle: Awaited<ReturnType<typeof startServer>>;
+  try {
+    handle = await startServer(opts);
+  } catch (err) {
+    if (err instanceof BindError) {
+      console.error(`Error: ${err.message}`);
+      console.error(
+        err.cause instanceof Error ? err.cause.message : String(err.cause),
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  const shutdown = async () => {
+    await handle.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }

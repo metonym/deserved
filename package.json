@@ -7,6 +7,10 @@
   "bin": {
     "deserved": "src/cli.ts"
   },
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "start": "bun src/cli.ts",
     "build": "bun scripts/build.ts",

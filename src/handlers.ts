@@ -406,6 +406,7 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
   const rootAbs = resolve(opts.root);
   const realRoot = realpathRoot(rootAbs);
   const resolution = createResolutionCache(rootAbs, realRoot, opts.watch);
+  const compression = createCompressionCache();
 
   const handle = async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -435,6 +436,7 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
         rootAbs,
         realRoot,
         resolution.resolveCached,
+        compression.getCompressed,
       );
     } catch (err) {
       console.error(err);
@@ -445,9 +447,9 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
   } as Handler;
 
   handle.invalidateResolutionCache = resolution.invalidate;
-  handle.invalidateCompressedCache = invalidateCompressedCache;
+  handle.invalidateCompressedCache = compression.invalidate;
   handle.resolutionCacheSize = resolution.size;
-  handle.compressedCacheBytes = () => compressedCacheBytes;
+  handle.compressedCacheBytes = compression.bytes;
   return handle;
 }
 
@@ -470,6 +472,7 @@ async function handleDecoded(
   rootAbs: string,
   realRoot: string | null,
   resolveCached: (pathname: string) => ResolvedFile | null,
+  getCompressed: GetCompressed,
 ): Promise<Response> {
   const send = (res: Response) => {
     logRequest(method, res.status, pathname, opts.quiet);
@@ -517,14 +520,14 @@ async function handleDecoded(
       logRequest(method, res.status, pathname, opts.quiet);
       return headify(method, res);
     }
-    const res = await serveFile(req, resolved, opts);
+    const res = await serveFile(getCompressed, req, resolved, opts);
     return send(res);
   }
 
   if (opts.spa && acceptsHtml(req) && shouldSpaFallback(pathname)) {
     const index = resolveCached("/");
     if (index) {
-      const res = await serveFile(req, index, opts, true);
+      const res = await serveFile(getCompressed, req, index, opts, true);
       return send(res);
     }
   }
@@ -585,54 +588,6 @@ type CompressedEntry = {
 // gives LRU behavior without a separate linked list.
 export const COMPRESSED_CACHE_BYTE_BUDGET = 64 * 1024 * 1024;
 
-const compressedCache = new Map<string, CompressedEntry>();
-let compressedCacheBytes = 0;
-
-function touchCompressedCache(cacheKey: string, entry: CompressedEntry): void {
-  const prev = compressedCache.get(cacheKey);
-  if (prev) {
-    compressedCache.delete(cacheKey);
-    compressedCacheBytes -= prev.data.byteLength;
-  }
-  compressedCache.set(cacheKey, entry);
-  compressedCacheBytes += entry.data.byteLength;
-
-  while (
-    compressedCacheBytes > COMPRESSED_CACHE_BYTE_BUDGET &&
-    compressedCache.size > 1
-  ) {
-    const oldestKey = compressedCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    const oldest = compressedCache.get(oldestKey);
-    compressedCache.delete(oldestKey);
-    if (oldest) compressedCacheBytes -= oldest.data.byteLength;
-  }
-}
-
-// In-flight compressions, keyed the same as compressedCache plus the file
-// version being compressed, so concurrent requests for a stale version
-// in-flight don't get handed a promise for an even-older result.
-const pendingCompression = new Map<
-  string,
-  {
-    size: number;
-    mtimeMs: number;
-    promise: Promise<Uint8Array<ArrayBuffer> | null>;
-  }
->();
-
-// The byte budget in touchCompressedCache only bounds *how much* a stale
-// entry can cost, not *whether* one lingers -- a path that's deleted (e.g.
-// a bundler's content-hashed output on rebuild) is never requested again,
-// so its entry is never naturally replaced or evicted. Watch mode already
-// knows a change happened; wire this into that same signal so deleted
-// paths' compressed bytes don't outlive the file.
-function invalidateCompressedCache(): void {
-  compressedCache.clear();
-  compressedCacheBytes = 0;
-  pendingCompression.clear();
-}
-
 // No Bun.gzip async API exists (only gzipSync); fall back to node:zlib so
 // gzip, like zstd, runs off the main thread instead of blocking the loop.
 const gzipAsync = promisify(gzip);
@@ -647,71 +602,131 @@ async function compress(
   return new Uint8Array(await gzipAsync(raw));
 }
 
-/**
- * Compressed-output cache keyed by (key, encoding, size, mtimeMs). Pick a
- * distinct key when the same path can yield different bytes, like
- * watch-injected HTML. loadRaw runs on miss. Concurrent misses for the same
- * (key, encoding, version) single-flight onto one in-flight compression.
- */
-async function getCompressed(
+type GetCompressed = (
   resolved: { key: string; size: number; mtimeMs: number },
   encoding: CompressionEncoding,
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
-): Promise<Uint8Array<ArrayBuffer> | null> {
-  const cacheKey = `${resolved.key}:${encoding}`;
-  const cached = compressedCache.get(cacheKey);
-  if (
-    cached &&
-    cached.size === resolved.size &&
-    cached.mtimeMs === resolved.mtimeMs
-  ) {
-    touchCompressedCache(cacheKey, cached); // bump recency on hit
-    return cached.data;
+) => Promise<Uint8Array<ArrayBuffer> | null>;
+
+/**
+ * Compressed-output cache scoped to one handler instance -- like
+ * createResolutionCache above, this keeps the (potentially large)
+ * compressed byte buffers it retains reclaimable as soon as the handler
+ * itself is no longer referenced, instead of pinning them for the life of
+ * the process the way a module-level cache would.
+ */
+function createCompressionCache() {
+  const cache = new Map<string, CompressedEntry>();
+  let bytes = 0;
+
+  // In-flight compressions, keyed the same as cache plus the file version
+  // being compressed, so concurrent requests for a stale version in-flight
+  // don't get handed a promise for an even-older result.
+  const pending = new Map<
+    string,
+    {
+      size: number;
+      mtimeMs: number;
+      promise: Promise<Uint8Array<ArrayBuffer> | null>;
+    }
+  >();
+
+  function touch(cacheKey: string, entry: CompressedEntry): void {
+    const prev = cache.get(cacheKey);
+    if (prev) {
+      cache.delete(cacheKey);
+      bytes -= prev.data.byteLength;
+    }
+    cache.set(cacheKey, entry);
+    bytes += entry.data.byteLength;
+
+    while (bytes > COMPRESSED_CACHE_BYTE_BUDGET && cache.size > 1) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = cache.get(oldestKey);
+      cache.delete(oldestKey);
+      if (oldest) bytes -= oldest.data.byteLength;
+    }
   }
 
-  const pending = pendingCompression.get(cacheKey);
-  if (
-    pending &&
-    pending.size === resolved.size &&
-    pending.mtimeMs === resolved.mtimeMs
-  ) {
-    return pending.promise;
-  }
+  /**
+   * Compressed-output cache keyed by (key, encoding, size, mtimeMs). Pick a
+   * distinct key when the same path can yield different bytes, like
+   * watch-injected HTML. loadRaw runs on miss. Concurrent misses for the
+   * same (key, encoding, version) single-flight onto one in-flight
+   * compression.
+   */
+  const getCompressed: GetCompressed = async (resolved, encoding, loadRaw) => {
+    const cacheKey = `${resolved.key}:${encoding}`;
+    const cached = cache.get(cacheKey);
+    if (
+      cached &&
+      cached.size === resolved.size &&
+      cached.mtimeMs === resolved.mtimeMs
+    ) {
+      touch(cacheKey, cached); // bump recency on hit
+      return cached.data;
+    }
 
-  const entry: {
-    size: number;
-    mtimeMs: number;
-    promise: Promise<Uint8Array<ArrayBuffer> | null>;
-  } = {
-    size: resolved.size,
-    mtimeMs: resolved.mtimeMs,
-    promise: Promise.resolve(null),
+    const inFlight = pending.get(cacheKey);
+    if (
+      inFlight &&
+      inFlight.size === resolved.size &&
+      inFlight.mtimeMs === resolved.mtimeMs
+    ) {
+      return inFlight.promise;
+    }
+
+    const entry: {
+      size: number;
+      mtimeMs: number;
+      promise: Promise<Uint8Array<ArrayBuffer> | null>;
+    } = {
+      size: resolved.size,
+      mtimeMs: resolved.mtimeMs,
+      promise: Promise.resolve(null),
+    };
+
+    entry.promise = (async () => {
+      try {
+        const raw = await loadRaw();
+        const data = await compress(encoding, raw);
+        touch(cacheKey, {
+          size: resolved.size,
+          mtimeMs: resolved.mtimeMs,
+          data,
+        });
+        return data;
+      } catch {
+        return null;
+      } finally {
+        if (pending.get(cacheKey)?.promise === entry.promise) {
+          pending.delete(cacheKey);
+        }
+      }
+    })();
+
+    pending.set(cacheKey, entry);
+    return entry.promise;
   };
 
-  entry.promise = (async () => {
-    try {
-      const raw = await loadRaw();
-      const data = await compress(encoding, raw);
-      touchCompressedCache(cacheKey, {
-        size: resolved.size,
-        mtimeMs: resolved.mtimeMs,
-        data,
-      });
-      return data;
-    } catch {
-      return null;
-    } finally {
-      if (pendingCompression.get(cacheKey)?.promise === entry.promise) {
-        pendingCompression.delete(cacheKey);
-      }
-    }
-  })();
+  // The byte budget above only bounds *how much* a stale entry can cost,
+  // not *whether* one lingers -- a path that's deleted (e.g. a bundler's
+  // content-hashed output on rebuild) is never requested again, so its
+  // entry is never naturally replaced or evicted. Watch mode already knows
+  // a change happened; the caller wires this into that same signal so
+  // deleted paths' compressed bytes don't outlive the file.
+  function invalidate(): void {
+    cache.clear();
+    bytes = 0;
+    pending.clear();
+  }
 
-  pendingCompression.set(cacheKey, entry);
-  return entry.promise;
+  return { getCompressed, invalidate, bytes: () => bytes };
 }
 
 async function tryCompress(
+  getCompressed: GetCompressed,
   req: Request,
   headers: Headers,
   cacheKey: { key: string; size: number; mtimeMs: number },
@@ -729,6 +744,7 @@ async function tryCompress(
 }
 
 async function serveFile(
+  getCompressed: GetCompressed,
   req: Request,
   resolved: ResolvedFile,
   opts: Options,
@@ -791,6 +807,7 @@ async function serveFile(
       // NUL can't appear in a real path, so it safely namespaces the
       // live-injected variant from the raw-file cache entry below.
       const res = await tryCompress(
+        getCompressed,
         req,
         headers,
         { key: `${path}\0live`, size, mtimeMs },
@@ -811,6 +828,7 @@ async function serveFile(
     size < 2_000_000
   ) {
     const res = await tryCompress(
+      getCompressed,
       req,
       headers,
       { key: path, size, mtimeMs },

@@ -329,7 +329,7 @@ describe("compressed cache: watch-mode invalidation", () => {
         makeOpts(root, { compress: true, watch: true }),
       );
 
-      const before = handle.compressedCacheBytes();
+      expect(handle.compressedCacheBytes()).toBe(0);
       const res = await handle(
         new Request("http://x/old.txt", {
           headers: { "Accept-Encoding": "gzip" },
@@ -337,7 +337,7 @@ describe("compressed cache: watch-mode invalidation", () => {
       );
       expect(res.status).toBe(200);
       await res.arrayBuffer();
-      expect(handle.compressedCacheBytes()).toBeGreaterThan(before);
+      expect(handle.compressedCacheBytes()).toBeGreaterThan(0);
 
       // Simulates a bundler rebuild dropping a content-hashed file: it's
       // deleted and never requested again, so only the watcher's
@@ -349,6 +349,38 @@ describe("compressed cache: watch-mode invalidation", () => {
       expect(handle.compressedCacheBytes()).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("compressed cache: instance isolation", () => {
+  test("one handler's cached bytes are invisible to another", async () => {
+    const rootA = mkdtempSync(join(tmpdir(), "compcache-iso-a-"));
+    const rootB = mkdtempSync(join(tmpdir(), "compcache-iso-b-"));
+    try {
+      writeFileSync(join(rootA, "file.txt"), "hello world ".repeat(2000));
+      writeFileSync(join(rootB, "file.txt"), "hello world ".repeat(2000));
+
+      const handleA = createHandler(makeOpts(rootA, { compress: true }));
+      const resA = await handleA(
+        new Request("http://x/file.txt", {
+          headers: { "Accept-Encoding": "gzip" },
+        }),
+      );
+      expect(resA.status).toBe(200);
+      await resA.arrayBuffer();
+      expect(handleA.compressedCacheBytes()).toBeGreaterThan(0);
+
+      // A second, independent handler starts with nothing cached, and
+      // clearing it must not touch the first handler's entries -- each
+      // createHandler() call owns its own cache, not a shared global one.
+      const handleB = createHandler(makeOpts(rootB, { compress: true }));
+      expect(handleB.compressedCacheBytes()).toBe(0);
+      handleB.invalidateCompressedCache();
+      expect(handleA.compressedCacheBytes()).toBeGreaterThan(0);
+    } finally {
+      rmSync(rootA, { recursive: true, force: true });
+      rmSync(rootB, { recursive: true, force: true });
     }
   });
 });

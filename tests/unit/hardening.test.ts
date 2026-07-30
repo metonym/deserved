@@ -319,3 +319,36 @@ describe("compressed cache: memory bound", () => {
     }
   }, 20000);
 });
+
+describe("compressed cache: watch-mode invalidation", () => {
+  test("invalidateCompressedCache drops all retained compressed bytes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "compcache-watch-"));
+    try {
+      writeFileSync(join(root, "old.txt"), "hello world ".repeat(2000));
+      const handle = createHandler(
+        makeOpts(root, { compress: true, watch: true }),
+      );
+
+      const before = handle.compressedCacheBytes();
+      const res = await handle(
+        new Request("http://x/old.txt", {
+          headers: { "Accept-Encoding": "gzip" },
+        }),
+      );
+      expect(res.status).toBe(200);
+      await res.arrayBuffer();
+      expect(handle.compressedCacheBytes()).toBeGreaterThan(before);
+
+      // Simulates a bundler rebuild dropping a content-hashed file: it's
+      // deleted and never requested again, so only the watcher's
+      // invalidation signal -- not a cache hit/miss on this path -- can
+      // ever reclaim its bytes.
+      unlinkSync(join(root, "old.txt"));
+      handle.invalidateCompressedCache();
+
+      expect(handle.compressedCacheBytes()).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -362,6 +362,10 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
       // Clear before debouncing the reload broadcast, so a request racing
       // the debounce window still sees the post-change resolution state.
       fetch.invalidateResolutionCache();
+      // A deleted path (e.g. a bundler's content-hashed output on rebuild)
+      // is never requested again, so its compressed bytes would otherwise
+      // never get evicted -- ride the same invalidation signal.
+      fetch.invalidateCompressedCache();
       batch.add(filename);
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {

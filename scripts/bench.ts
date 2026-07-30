@@ -24,6 +24,7 @@ const CONCURRENCY = 32;
 const WARMUP_S = 1;
 const DEFAULT_DURATION_S = 4;
 const READY_TIMEOUT_MS = 5000;
+const RSS_SAMPLE_INTERVAL_MS = 150;
 
 type Scenario = {
   name: string;
@@ -39,7 +40,56 @@ type ScenarioResult = {
   reqPerSec: number;
   p50: number;
   p99: number;
+  rssBeforeKb: number | null;
+  rssPeakKb: number | null;
 };
+
+/** Server RSS in KB via `ps` (macOS and Linux). Comparable on one machine only. */
+async function sampleRssKb(pid: number): Promise<number | null> {
+  try {
+    const proc = Bun.spawn(["ps", "-o", "rss=", "-p", String(pid)], {
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const text = (await new Response(proc.stdout).text()).trim();
+    await proc.exited;
+    const kb = Number(text);
+    return Number.isFinite(kb) && kb > 0 ? kb : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Poll RSS during a scenario. Catches the peak under load, not only before/after. */
+class RssSampler {
+  private samples: number[] = [];
+  private running = false;
+  private loopDone: Promise<void> = Promise.resolve();
+
+  constructor(
+    private pid: number,
+    private intervalMs: number,
+  ) {}
+
+  start(): void {
+    this.running = true;
+    this.loopDone = (async () => {
+      while (this.running) {
+        const kb = await sampleRssKb(this.pid);
+        if (kb !== null) this.samples.push(kb);
+        await Bun.sleep(this.intervalMs);
+      }
+    })();
+  }
+
+  async stop(): Promise<{ maxKb: number | null }> {
+    this.running = false;
+    await this.loopDone;
+    if (this.samples.length === 0) return { maxKb: null };
+    return { maxKb: Math.max(...this.samples) };
+  }
+}
 
 function parseCliArgs(argv: string[]): {
   filter: string | null;
@@ -98,7 +148,7 @@ function buildFixture(): string {
   return dir;
 }
 
-type RunningServer = { base: string; stop: () => Promise<void> };
+type RunningServer = { base: string; pid: number; stop: () => Promise<void> };
 
 async function startServer(fixtureDir: string): Promise<RunningServer> {
   const proc: Subprocess<"ignore", "pipe", "pipe"> = Bun.spawn(
@@ -120,6 +170,7 @@ async function startServer(fixtureDir: string): Promise<RunningServer> {
       if (match) {
         return {
           base: match[0],
+          pid: proc.pid,
           stop: async () => {
             proc.kill();
             await proc.exited;
@@ -193,6 +244,7 @@ async function runScenario(
   base: string,
   scenario: Scenario,
   durationS: number,
+  serverPid: number,
 ): Promise<ScenarioResult> {
   const url = base + scenario.path;
   const fire = async () => {
@@ -203,11 +255,16 @@ async function runScenario(
   };
 
   await measure(CONCURRENCY, WARMUP_S, fire);
+
+  const rssBeforeKb = await sampleRssKb(serverPid);
+  const sampler = new RssSampler(serverPid, RSS_SAMPLE_INTERVAL_MS);
+  sampler.start();
   const { latencies, errors, actualSeconds } = await measure(
     CONCURRENCY,
     durationS,
     fire,
   );
+  const { maxKb: rssPeakKb } = await sampler.stop();
   const sorted = [...latencies].sort((a, b) => a - b);
 
   return {
@@ -218,7 +275,19 @@ async function runScenario(
     reqPerSec: latencies.length / actualSeconds,
     p50: percentile(sorted, 0.5),
     p99: percentile(sorted, 0.99),
+    rssBeforeKb,
+    rssPeakKb,
   };
+}
+
+function fmtMb(kb: number | null): string {
+  return kb === null ? "n/a" : (kb / 1024).toFixed(1);
+}
+
+function fmtMbDelta(beforeKb: number | null, peakKb: number | null): string {
+  if (beforeKb === null || peakKb === null) return "n/a";
+  const deltaMb = (peakKb - beforeKb) / 1024;
+  return `${deltaMb >= 0 ? "+" : ""}${deltaMb.toFixed(1)}`;
 }
 
 function printTable(results: ScenarioResult[]) {
@@ -229,6 +298,8 @@ function printTable(results: ScenarioResult[]) {
     "p99 (ms)",
     "requests",
     "errors",
+    "rss peak (MB)",
+    "rss Δ (MB)",
   ];
   const rows = results.map((r) => [
     r.name,
@@ -237,6 +308,8 @@ function printTable(results: ScenarioResult[]) {
     r.p99.toFixed(2),
     String(r.requests),
     String(r.errors),
+    fmtMb(r.rssPeakKb),
+    fmtMbDelta(r.rssBeforeKb, r.rssPeakKb),
   ]);
 
   const widths = headers.map((h, i) =>
@@ -267,17 +340,26 @@ async function main() {
       process.exit(1);
     }
 
+    const baselineRssKb = await sampleRssKb(server.pid);
+
     const results: ScenarioResult[] = [];
     for (const scenario of scenarios) {
       console.log(`Running ${scenario.name}...`);
-      results.push(await runScenario(server.base, scenario, duration));
+      results.push(
+        await runScenario(server.base, scenario, duration, server.pid),
+      );
     }
+
+    const finalRssKb = await sampleRssKb(server.pid);
 
     console.log();
     printTable(results);
     console.log();
     console.log(
-      `bench-json: ${JSON.stringify({ concurrency: CONCURRENCY, warmupS: WARMUP_S, durationS: duration, results })}`,
+      `rss baseline: ${fmtMb(baselineRssKb)} MB, final: ${fmtMb(finalRssKb)} MB, growth: ${fmtMbDelta(baselineRssKb, finalRssKb)} MB`,
+    );
+    console.log(
+      `bench-json: ${JSON.stringify({ concurrency: CONCURRENCY, warmupS: WARMUP_S, durationS: duration, baselineRssKb, finalRssKb, results })}`,
     );
   } finally {
     await server?.stop();

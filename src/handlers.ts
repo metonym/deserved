@@ -24,6 +24,7 @@ export type ResolvedFile = {
 export type Handler = {
   (req: Request): Promise<Response>;
   invalidateResolutionCache(): void;
+  invalidateCompressedCache(): void;
   resolutionCacheSize(): number;
   compressedCacheBytes(): number;
 };
@@ -444,6 +445,7 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
   } as Handler;
 
   handle.invalidateResolutionCache = resolution.invalidate;
+  handle.invalidateCompressedCache = invalidateCompressedCache;
   handle.resolutionCacheSize = resolution.size;
   handle.compressedCacheBytes = () => compressedCacheBytes;
   return handle;
@@ -618,6 +620,18 @@ const pendingCompression = new Map<
     promise: Promise<Uint8Array<ArrayBuffer> | null>;
   }
 >();
+
+// The byte budget in touchCompressedCache only bounds *how much* a stale
+// entry can cost, not *whether* one lingers -- a path that's deleted (e.g.
+// a bundler's content-hashed output on rebuild) is never requested again,
+// so its entry is never naturally replaced or evicted. Watch mode already
+// knows a change happened; wire this into that same signal so deleted
+// paths' compressed bytes don't outlive the file.
+function invalidateCompressedCache(): void {
+  compressedCache.clear();
+  compressedCacheBytes = 0;
+  pendingCompression.clear();
+}
 
 // No Bun.gzip async API exists (only gzipSync); fall back to node:zlib so
 // gzip, like zstd, runs off the main thread instead of blocking the loop.

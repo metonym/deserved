@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-07-30
+
+**Features**
+
+- Programmatic API: `serve()` via package exports for embedding without the CLI. (`#15`)
+- Fail fast when the root path is missing or not a directory. (`#16`)
+- Hot-swap stylesheets on CSS-only changes in `--watch` mode (mixed batches still full-reload). (`#18`)
+- Hop to the next free port when the default is taken; honor `$PORT` when `--port` is omitted. (`#20`)
+- Show file sizes and modification times in directory listings.
+
+**Performance**
+
+- Cache path resolution with watcher / TTL invalidation (re-stat winners so content edits stay fresh). (`#17`)
+
+**Fixes**
+
+- Keep live-reload SSE alive with heartbeats; close clients on shutdown and log `server stopped` cleanly. (`#21`)
+- Bound the compressed-response cache with a 64MB LRU byte budget, evict on watch invalidation, and scope it per handler instance.
+
 ## 0.3.0 — 2026-07-27
 
 **Features**

@@ -25,6 +25,7 @@ export type Handler = {
   (req: Request): Promise<Response>;
   invalidateResolutionCache(): void;
   resolutionCacheSize(): number;
+  compressedCacheBytes(): number;
 };
 
 type Hub = ReturnType<typeof createSseHub>;
@@ -444,6 +445,7 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
 
   handle.invalidateResolutionCache = resolution.invalidate;
   handle.resolutionCacheSize = resolution.size;
+  handle.compressedCacheBytes = () => compressedCacheBytes;
   return handle;
 }
 
@@ -567,12 +569,43 @@ async function handleDecoded(
   return send(res);
 }
 
-// Unbounded, but grows only with distinct files actually requested — fine
-// for a dev-server process serving one directory tree, not worth an LRU.
-const compressedCache = new Map<
-  string,
-  { size: number; mtimeMs: number; data: Uint8Array<ArrayBuffer> }
->();
+type CompressedEntry = {
+  size: number;
+  mtimeMs: number;
+  data: Uint8Array<ArrayBuffer>;
+};
+
+// Bounded by total retained bytes, not entry count -- payload sizes vary
+// too widely (a few KB of CSS vs a near-2MB image) for a count cap to
+// bound memory in any useful way. Map iteration order is insertion order,
+// and every touch (read or write) re-inserts its key, so the front of the
+// map is always the least-recently-used entry -- evicting from there
+// gives LRU behavior without a separate linked list.
+export const COMPRESSED_CACHE_BYTE_BUDGET = 64 * 1024 * 1024;
+
+const compressedCache = new Map<string, CompressedEntry>();
+let compressedCacheBytes = 0;
+
+function touchCompressedCache(cacheKey: string, entry: CompressedEntry): void {
+  const prev = compressedCache.get(cacheKey);
+  if (prev) {
+    compressedCache.delete(cacheKey);
+    compressedCacheBytes -= prev.data.byteLength;
+  }
+  compressedCache.set(cacheKey, entry);
+  compressedCacheBytes += entry.data.byteLength;
+
+  while (
+    compressedCacheBytes > COMPRESSED_CACHE_BYTE_BUDGET &&
+    compressedCache.size > 1
+  ) {
+    const oldestKey = compressedCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = compressedCache.get(oldestKey);
+    compressedCache.delete(oldestKey);
+    if (oldest) compressedCacheBytes -= oldest.data.byteLength;
+  }
+}
 
 // In-flight compressions, keyed the same as compressedCache plus the file
 // version being compressed, so concurrent requests for a stale version
@@ -618,6 +651,7 @@ async function getCompressed(
     cached.size === resolved.size &&
     cached.mtimeMs === resolved.mtimeMs
   ) {
+    touchCompressedCache(cacheKey, cached); // bump recency on hit
     return cached.data;
   }
 
@@ -644,7 +678,7 @@ async function getCompressed(
     try {
       const raw = await loadRaw();
       const data = await compress(encoding, raw);
-      compressedCache.set(cacheKey, {
+      touchCompressedCache(cacheKey, {
         size: resolved.size,
         mtimeMs: resolved.mtimeMs,
         data,

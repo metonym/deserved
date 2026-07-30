@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  COMPRESSED_CACHE_BYTE_BUDGET,
   createHandler,
   RESOLUTION_CACHE_LIMIT,
   RESOLUTION_TTL_MS,
@@ -272,6 +273,46 @@ describe("resolution cache: memory bound", () => {
       }
       expect(handle.resolutionCacheSize()).toBeLessThanOrEqual(
         RESOLUTION_CACHE_LIMIT,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20000);
+});
+
+describe("compressed cache: memory bound", () => {
+  test("many distinct compressed files stay within the byte budget", async () => {
+    const root = mkdtempSync(join(tmpdir(), "compcache-cap-"));
+    try {
+      const handle = createHandler(makeOpts(root, { compress: true }));
+      // Low-compressibility (random) content close to the per-file 2MB
+      // compression cutoff, so the compressed cache fills up in relatively
+      // few requests instead of needing gigabytes of fixture data.
+      const fileCount = 40;
+      const fileSize = 1_900_000;
+      const chunk = 65536;
+      for (let i = 0; i < fileCount; i++) {
+        const bytes = new Uint8Array(fileSize);
+        for (let o = 0; o < fileSize; o += chunk) {
+          crypto.getRandomValues(
+            bytes.subarray(o, Math.min(o + chunk, fileSize)),
+          );
+        }
+        writeFileSync(join(root, `f${i}.txt`), bytes);
+      }
+
+      for (let i = 0; i < fileCount; i++) {
+        const res = await handle(
+          new Request(`http://x/f${i}.txt`, {
+            headers: { "Accept-Encoding": "gzip" },
+          }),
+        );
+        expect(res.status).toBe(200);
+        await res.arrayBuffer();
+      }
+
+      expect(handle.compressedCacheBytes()).toBeLessThanOrEqual(
+        COMPRESSED_CACHE_BYTE_BUDGET,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

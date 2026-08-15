@@ -26,6 +26,15 @@ if (!result.success) {
   process.exit(1);
 }
 
+const dts = Bun.spawnSync(
+  ["bun", "x", "tsc", "-p", join(root, "tsconfig.build.json")],
+  { cwd: root, stdout: "inherit", stderr: "inherit" },
+);
+
+if (!dts.success) {
+  process.exit(1);
+}
+
 for (const extra of ["README.md", "LICENSE"]) {
   const path = join(root, extra);
   if (existsSync(path)) {
@@ -40,6 +49,7 @@ for (const key of STRIP) {
 pkg.bin = { deserved: "./cli.js" };
 pkg.main = "./index.js";
 pkg.module = "./index.js";
-pkg.exports = { ".": "./index.js" };
+pkg.types = "./index.d.ts";
+pkg.exports = { ".": { types: "./index.d.ts", default: "./index.js" } };
 
 writeFileSync(join(out, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);

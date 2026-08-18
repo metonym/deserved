@@ -96,17 +96,16 @@ group("content negotiation", () => {
 
 group("caching", () => {
   const req = getReq();
+  const etaggedReq = etagReq(warmEtag);
   summary(() => {
     bench("makeEtag", () =>
       do_not_optimize(makeEtag(12_345, 1_700_000_000_000)),
     );
     bench("notModified", () =>
-      do_not_optimize(notModified(etagReq(warmEtag), warmEtag)),
+      do_not_optimize(notModified(etaggedReq, warmEtag)),
     );
     bench("isNotModified", () =>
-      do_not_optimize(
-        isNotModified(etagReq(warmEtag), warmEtag, 1_700_000_000_000),
-      ),
+      do_not_optimize(isNotModified(etaggedReq, warmEtag, 1_700_000_000_000)),
     );
     bench("ifRangeSatisfied", () =>
       do_not_optimize(ifRangeSatisfied(req, warmEtag, 1_700_000_000_000)),

@@ -1,5 +1,5 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
-import { extname, join, normalize, resolve, sep } from "node:path";
+import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import { escapeHTML } from "bun";
@@ -59,7 +59,8 @@ export function contentType(file: Bun.BunFile, path: string): string {
 }
 
 export function isCompressible(type: string): boolean {
-  const base = type.split(";")[0]?.trim().toLowerCase() ?? "";
+  const semi = type.indexOf(";");
+  const base = (semi === -1 ? type : type.slice(0, semi)).trim().toLowerCase();
   return (
     base.startsWith("text/") ||
     base === "application/javascript" ||
@@ -80,10 +81,17 @@ export function makeEtag(size: number, mtimeMs: number, tag = ""): string {
   return `"${size}-${Math.trunc(mtimeMs)}${tag}"`;
 }
 
+function stripWeak(tag: string): string {
+  return tag.startsWith("W/") ? tag.slice(2) : tag;
+}
+
 export function notModified(req: Request, etag: string): boolean {
   const inm = req.headers.get("If-None-Match");
   if (!inm) return false;
-  return inm.split(",").some((t) => t.trim().replace(/^W\//, "") === etag);
+  // Common case is a single value with no comma -- skip the split() array
+  // allocation entirely when there's nothing to split.
+  if (inm.indexOf(",") === -1) return stripWeak(inm.trim()) === etag;
+  return inm.split(",").some((t) => stripWeak(t.trim()) === etag);
 }
 
 export function notModifiedSince(req: Request, mtimeMs: number): boolean {
@@ -139,10 +147,9 @@ export function pickEncoding(req: Request): CompressionEncoding | null {
 
 export function shouldSpaFallback(pathname: string): boolean {
   if (pathname.startsWith("/__")) return false;
-  const last = pathname.slice(pathname.lastIndexOf("/") + 1);
-  if (!last) return true;
-  if (last.includes(".")) return false;
-  return true;
+  const slashIdx = pathname.lastIndexOf("/");
+  if (slashIdx === pathname.length - 1) return true; // empty last segment
+  return pathname.indexOf(".", slashIdx + 1) === -1;
 }
 
 function resolveFileWithRoot(
@@ -256,10 +263,11 @@ export function buildCandidates(relative: string): string[] {
     return ["index.html"];
   }
 
-  const base = relative.endsWith("/") ? relative.slice(0, -1) : relative;
+  const trailingSlash = relative.endsWith("/");
+  const base = trailingSlash ? relative.slice(0, -1) : relative;
   if (!base) return ["index.html"];
 
-  if (relative.endsWith("/")) {
+  if (trailingSlash) {
     return [`${base}/index.html`];
   }
 
@@ -267,8 +275,11 @@ export function buildCandidates(relative: string): string[] {
 }
 
 export function safeJoin(root: string, relative: string): string | null {
-  const rootAbs = resolve(root);
-  const full = normalize(join(rootAbs, relative));
+  // join() already normalizes its result, and every caller here already
+  // passes an absolute root -- resolve() only matters for the rare caller
+  // that doesn't, so skip it (and the cwd lookup it implies) when we can.
+  const rootAbs = isAbsolute(root) ? root : resolve(root);
+  const full = join(rootAbs, relative);
   if (full !== rootAbs && !full.startsWith(rootAbs + sep)) {
     return null;
   }
@@ -353,25 +364,28 @@ function formatDate(mtimeMs: number | null): string {
 }
 
 export function listDir(dir: string): DirEntry[] {
-  return readdirSync(dir, { withFileTypes: true })
-    .filter((e) => !e.name.startsWith("."))
-    .map((e) => {
-      const isDir = e.isDirectory();
-      let size: number | null = null;
-      let mtimeMs: number | null = null;
-      if (!isDir) {
-        try {
-          const st = statSync(join(dir, e.name));
-          size = st.size;
-          mtimeMs = st.mtimeMs;
-        } catch {}
-      }
-      return { name: e.name, dir: isDir, size, mtimeMs };
-    })
-    .sort((a, b) => {
-      if (a.dir !== b.dir) return a.dir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
+  const dirents = readdirSync(dir, { withFileTypes: true });
+  const entries: DirEntry[] = [];
+
+  for (const e of dirents) {
+    if (e.name.startsWith(".")) continue;
+    const isDir = e.isDirectory();
+    let size: number | null = null;
+    let mtimeMs: number | null = null;
+    if (!isDir) {
+      try {
+        const st = statSync(join(dir, e.name));
+        size = st.size;
+        mtimeMs = st.mtimeMs;
+      } catch {}
+    }
+    entries.push({ name: e.name, dir: isDir, size, mtimeMs });
+  }
+
+  return entries.sort((a, b) => {
+    if (a.dir !== b.dir) return a.dir ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 export function directoryListing(
@@ -381,6 +395,7 @@ export function directoryListing(
   const base = pathname.endsWith("/") ? pathname : `${pathname}/`;
   const encodedBase = encodeUrlPath(base);
   const parent = parentPath(pathname);
+  const escapedPathname = escapeHTML(pathname);
 
   const rows = entries
     .map((e) => {
@@ -403,7 +418,7 @@ export function directoryListing(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Index of ${escapeHTML(pathname)}</title>
+  <title>Index of ${escapedPathname}</title>
   <style>
     :root { color-scheme: light dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     body { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
@@ -416,7 +431,7 @@ export function directoryListing(
   </style>
 </head>
 <body>
-  <h1>Index of ${escapeHTML(pathname || "/")}</h1>
+  <h1>Index of ${escapedPathname || "/"}</h1>
   <ul>
 ${up}${rows}
   </ul>

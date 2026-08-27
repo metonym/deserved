@@ -1,7 +1,5 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, resolve, sep } from "node:path";
-import { promisify } from "node:util";
-import { gzip } from "node:zlib";
 import { escapeHTML } from "bun";
 import {
   type createSseHub,
@@ -643,9 +641,18 @@ type CompressedEntry = {
 // gives LRU behavior without a separate linked list.
 export const COMPRESSED_CACHE_BYTE_BUDGET = 64 * 1024 * 1024;
 
-// No Bun.gzip async API exists (only gzipSync); fall back to node:zlib so
-// gzip, like zstd, runs off the main thread instead of blocking the loop.
-const gzipAsync = promisify(gzip);
+// Bun 1.4's CompressionStream is a native (non-JS) implementation, so gzip
+// runs off the main thread the same way Bun.zstdCompress does -- no need
+// for the node:zlib fallback used previously.
+async function gzipCompress(
+  raw: Uint8Array<ArrayBuffer>,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const cs = new CompressionStream("gzip");
+  const writer = cs.writable.getWriter();
+  writer.write(raw);
+  writer.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
 
 async function compress(
   encoding: CompressionEncoding,
@@ -654,7 +661,7 @@ async function compress(
   if (encoding === "zstd") {
     return new Uint8Array(await Bun.zstdCompress(raw));
   }
-  return new Uint8Array(await gzipAsync(raw));
+  return gzipCompress(raw);
 }
 
 type GetCompressed = (

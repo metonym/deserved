@@ -69,4 +69,45 @@ describe("e2e range requests", () => {
       removeFixture(root);
     }
   });
+
+  test("falls back to a normal 200 for a multi-range request", async () => {
+    const root = fixtureDir("range-multi");
+    write(root, "data.bin", "0123456789");
+
+    const cli = await startCli(root, ["--no-compress"]);
+    try {
+      const res = await fetch(`${cli.base}/data.bin`, {
+        headers: { Range: "bytes=0-1,2-3" },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("0123456789");
+    } finally {
+      cli.stop();
+      removeFixture(root);
+    }
+  });
+
+  test("an aborted range read doesn't corrupt a later range on the same file", async () => {
+    const root = fixtureDir("range-abort");
+    write(root, "data.bin", "0123456789");
+
+    const cli = await startCli(root, ["--no-compress"]);
+    try {
+      const aborted = await fetch(`${cli.base}/data.bin`, {
+        headers: { Range: "bytes=0-2" },
+      });
+      expect(aborted.status).toBe(206);
+      await aborted.body?.cancel();
+
+      const after = await fetch(`${cli.base}/data.bin`, {
+        headers: { Range: "bytes=7-9" },
+      });
+      expect(after.status).toBe(206);
+      expect(after.headers.get("Content-Length")).toBe("3");
+      expect(await after.text()).toBe("789");
+    } finally {
+      cli.stop();
+      removeFixture(root);
+    }
+  });
 });

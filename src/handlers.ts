@@ -83,13 +83,16 @@ function stripWeak(tag: string): string {
   return tag.startsWith("W/") ? tag.slice(2) : tag;
 }
 
-export function notModified(req: Request, etag: string): boolean {
-  const inm = req.headers.get("If-None-Match");
-  if (!inm) return false;
+function etagMatches(inm: string, etag: string): boolean {
   // Common case is a single value with no comma -- skip the split() array
   // allocation entirely when there's nothing to split.
   if (inm.indexOf(",") === -1) return stripWeak(inm.trim()) === etag;
   return inm.split(",").some((t) => stripWeak(t.trim()) === etag);
+}
+
+export function notModified(req: Request, etag: string): boolean {
+  const inm = req.headers.get("If-None-Match");
+  return inm ? etagMatches(inm, etag) : false;
 }
 
 export function notModifiedSince(req: Request, mtimeMs: number): boolean {
@@ -106,7 +109,7 @@ export function isNotModified(
   mtimeMs: number,
 ): boolean {
   const inm = req.headers.get("If-None-Match");
-  return inm ? notModified(req, etag) : notModifiedSince(req, mtimeMs);
+  return inm ? etagMatches(inm, etag) : notModifiedSince(req, mtimeMs);
 }
 
 export function ifRangeSatisfied(
@@ -146,7 +149,7 @@ export function pickEncoding(req: Request): CompressionEncoding | null {
 export function shouldSpaFallback(pathname: string): boolean {
   if (pathname.startsWith("/__")) return false;
   const slashIdx = pathname.lastIndexOf("/");
-  if (slashIdx === pathname.length - 1) return true; // empty last segment
+  if (slashIdx === pathname.length - 1) return true;
   return pathname.indexOf(".", slashIdx + 1) === -1;
 }
 
@@ -164,20 +167,29 @@ function resolveFileWithRoot(
     if (!full) continue;
     const real = containedPath(realRoot, full);
     if (!real) continue;
-    try {
-      const st = statSync(real);
-      if (st.isFile()) {
-        return {
-          path: real,
-          file: Bun.file(real),
-          size: st.size,
-          mtimeMs: st.mtimeMs,
-          kind: candidateKind(candidate),
-        };
-      }
-    } catch {}
+    const resolved = statFile(real, candidateKind(candidate));
+    if (resolved) return resolved;
   }
 
+  return null;
+}
+
+function statFile(
+  real: string,
+  kind: ResolvedFile["kind"],
+): ResolvedFile | null {
+  try {
+    const st = statSync(real);
+    if (st.isFile()) {
+      return {
+        path: real,
+        file: Bun.file(real),
+        size: st.size,
+        mtimeMs: st.mtimeMs,
+        kind,
+      };
+    }
+  } catch {}
   return null;
 }
 
@@ -186,12 +198,9 @@ function resolveFileWithRoot(
 // ever probes as many distinct paths as a human clicks through.
 export const RESOLUTION_CACHE_LIMIT = 4096;
 
-// Bounds staleness in non-watch mode: a newly-created or newly-deleted
-// candidate (e.g. adding about.html for a pathname previously cached as a
-// 404) becomes visible within this window. Half the ~1s ceiling this node
-// targets, so it stays comfortably inside that budget while still
-// amortizing across the many requests a benchmark (or a browser loading a
-// page's assets) fires in a burst.
+// Bounds staleness in non-watch mode: a newly created or deleted candidate
+// (e.g. adding about.html for a pathname previously cached as a 404)
+// becomes visible within this window.
 export const RESOLUTION_TTL_MS = 500;
 
 type CachedResolution = { real: string; kind: ResolvedFile["kind"] } | null;
@@ -217,18 +226,8 @@ function createResolutionCache(
     const cached = cache.get(pathname);
     if (cached && (watch || Date.now() - cached.at < RESOLUTION_TTL_MS)) {
       if (cached.value === null) return null;
-      try {
-        const st = statSync(cached.value.real);
-        if (st.isFile()) {
-          return {
-            path: cached.value.real,
-            file: Bun.file(cached.value.real),
-            size: st.size,
-            mtimeMs: st.mtimeMs,
-            kind: cached.value.kind,
-          };
-        }
-      } catch {}
+      const hit = statFile(cached.value.real, cached.value.kind);
+      if (hit) return hit;
       // Cached winner disappeared or changed kind -- re-probe below.
     }
 
@@ -250,9 +249,7 @@ function createResolutionCache(
 
 function candidateKind(candidate: string): ResolvedFile["kind"] {
   if (candidate.endsWith("/index.html")) return "dir-index";
-  if (candidate.endsWith(".html") && !candidate.endsWith("/index.html")) {
-    return "html-ext";
-  }
+  if (candidate.endsWith(".html")) return "html-ext";
   return "file";
 }
 
@@ -294,19 +291,12 @@ function containedPath(realRoot: string, full: string): string | null {
   }
 }
 
-const realRootCache = new Map<string, string | null>();
-
 function realpathRoot(rootAbs: string): string | null {
-  let real = realRootCache.get(rootAbs);
-  if (real === undefined) {
-    try {
-      real = realpathSync(rootAbs);
-    } catch {
-      real = null;
-    }
-    realRootCache.set(rootAbs, real);
+  try {
+    return realpathSync(rootAbs);
+  } catch {
+    return null;
   }
-  return real;
 }
 
 export function realContainedPath(
@@ -329,11 +319,10 @@ function resolveDirWithRoot(
   const real = containedPath(realRoot, full);
   if (!real) return null;
   try {
-    if (statSync(real).isDirectory()) return real;
+    return statSync(real).isDirectory() ? real : null;
   } catch {
     return null;
   }
-  return null;
 }
 
 type DirEntry = {
@@ -455,11 +444,28 @@ function joinUrl(base: string, name: string): string {
   return `${base.replace(/\/+$/, "")}/${name}`;
 }
 
+type HandlerContext = {
+  opts: Options;
+  hub: Hub | undefined;
+  rootAbs: string;
+  realRoot: string | null;
+  resolveCached: (pathname: string) => ResolvedFile | null;
+  getCompressed: GetCompressed;
+};
+
 export function createHandler(opts: Options, hub?: Hub): Handler {
   const rootAbs = resolve(opts.root);
   const realRoot = realpathRoot(rootAbs);
   const resolution = createResolutionCache(rootAbs, realRoot, opts.watch);
   const compression = createCompressionCache();
+  const ctx: HandlerContext = {
+    opts,
+    hub,
+    rootAbs,
+    realRoot,
+    resolveCached: resolution.resolveCached,
+    getCompressed: compression.getCompressed,
+  };
 
   const handle = async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -471,31 +477,18 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
         pathname = decodeURIComponent(url.pathname);
       } catch {
         const res = new Response("Bad Request", { status: 400 });
-        logRequest(method, 400, url.pathname, opts.quiet);
-        return headify(method, withCors(res, opts));
+        return finish(method, url.pathname, opts, res);
       }
     } else {
       pathname = url.pathname;
     }
 
     try {
-      return await handleDecoded(
-        req,
-        method,
-        pathname,
-        url,
-        opts,
-        hub,
-        rootAbs,
-        realRoot,
-        resolution.resolveCached,
-        compression.getCompressed,
-      );
+      return await handleDecoded(req, method, pathname, url, ctx);
     } catch (err) {
       console.error(err);
       const res = new Response("Internal Server Error", { status: 500 });
-      logRequest(method, 500, url.pathname, opts.quiet);
-      return headify(method, withCors(res, opts));
+      return finish(method, url.pathname, opts, res);
     }
   } as Handler;
 
@@ -506,13 +499,31 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
   return handle;
 }
 
-function directoryRedirect(url: URL, opts: Options): Response {
-  const location = `${url.pathname}/${url.search}`;
-  const res = new Response(null, {
+function finish(
+  method: string,
+  pathname: string,
+  opts: Options,
+  res: Response,
+): Response {
+  logRequest(method, res.status, pathname, opts.quiet);
+  return headify(method, withCors(res, opts));
+}
+
+function directoryRedirect(url: URL): Response {
+  return new Response(null, {
     status: 301,
-    headers: { Location: location },
+    headers: { Location: `${url.pathname}/${url.search}` },
   });
-  return withCors(res, opts);
+}
+
+function htmlPage(html: string, opts: Options, status = 200): Response {
+  return new Response(opts.watch ? injectLiveReload(html) : html, {
+    status,
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "Cache-Control": "no-cache",
+    },
+  });
 }
 
 async function handleDecoded(
@@ -520,17 +531,16 @@ async function handleDecoded(
   method: string,
   pathname: string,
   url: URL,
-  opts: Options,
-  hub: Hub | undefined,
-  rootAbs: string,
-  realRoot: string | null,
-  resolveCached: (pathname: string) => ResolvedFile | null,
-  getCompressed: GetCompressed,
+  {
+    opts,
+    hub,
+    rootAbs,
+    realRoot,
+    resolveCached,
+    getCompressed,
+  }: HandlerContext,
 ): Promise<Response> {
-  const send = (res: Response) => {
-    logRequest(method, res.status, pathname, opts.quiet);
-    return headify(method, withCors(res, opts));
-  };
+  const send = (res: Response) => finish(method, pathname, opts, res);
 
   if (method !== "GET" && method !== "HEAD") {
     const res = new Response("Method Not Allowed", {
@@ -569,62 +579,39 @@ async function handleDecoded(
 
   if (resolved) {
     if (resolved.kind === "dir-index" && !pathname.endsWith("/")) {
-      const res = directoryRedirect(url, opts);
-      logRequest(method, res.status, pathname, opts.quiet);
-      return headify(method, res);
+      return send(directoryRedirect(url));
     }
-    const res = await serveFile(getCompressed, req, resolved, opts);
-    return send(res);
+    return send(await serveFile(getCompressed, req, resolved, opts));
   }
 
-  if (opts.spa && acceptsHtml(req) && shouldSpaFallback(pathname)) {
+  const wantsHtml = acceptsHtml(req);
+
+  if (opts.spa && wantsHtml && shouldSpaFallback(pathname)) {
     const index = resolveCached("/");
     if (index) {
-      const res = await serveFile(getCompressed, req, index, opts, true);
-      return send(res);
+      return send(await serveFile(getCompressed, req, index, opts, true));
     }
   }
 
   if (opts.dir) {
     const dir = resolveDirWithRoot(rootAbs, realRoot, pathname);
     if (dir) {
-      if (!pathname.endsWith("/")) {
-        const res = directoryRedirect(url, opts);
-        logRequest(method, res.status, pathname, opts.quiet);
-        return headify(method, res);
-      }
-      const entries = listDir(dir);
-      const html = directoryListing(pathname, entries);
-      const body = opts.watch ? injectLiveReload(html) : html;
-      const res = new Response(body, {
-        headers: {
-          "Content-Type": "text/html;charset=utf-8",
-          "Cache-Control": "no-cache",
-        },
-      });
-      return send(res);
+      if (!pathname.endsWith("/")) return send(directoryRedirect(url));
+      const html = directoryListing(pathname, listDir(dir));
+      return send(htmlPage(html, opts));
     }
   }
 
-  if (acceptsHtml(req)) {
+  if (wantsHtml) {
     const notFoundPage = resolveCached("/404.html");
     if (notFoundPage) {
-      const html = await notFoundPage.file.text();
       // Error pages are small; skip compression to keep this path simple.
-      const body = opts.watch ? injectLiveReload(html) : html;
-      const res = new Response(body, {
-        status: 404,
-        headers: {
-          "Content-Type": "text/html;charset=utf-8",
-          "Cache-Control": "no-cache",
-        },
-      });
-      return send(res);
+      const html = await notFoundPage.file.text();
+      return send(htmlPage(html, opts, 404));
     }
   }
 
-  const res = new Response("Not Found", { status: 404 });
-  return send(res);
+  return send(new Response("Not Found", { status: 404 }));
 }
 
 type CompressedEntry = {
@@ -641,9 +628,8 @@ type CompressedEntry = {
 // gives LRU behavior without a separate linked list.
 export const COMPRESSED_CACHE_BYTE_BUDGET = 64 * 1024 * 1024;
 
-// Bun 1.4's CompressionStream is a native (non-JS) implementation, so gzip
-// runs off the main thread the same way Bun.zstdCompress does -- no need
-// for the node:zlib fallback used previously.
+// Bun 1.4's CompressionStream is native, so gzip runs off the main thread
+// the same way Bun.zstdCompress does.
 async function gzipCompress(
   raw: Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
@@ -670,6 +656,12 @@ type GetCompressed = (
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
 ) => Promise<Uint8Array<ArrayBuffer> | null>;
 
+type PendingCompression = {
+  size: number;
+  mtimeMs: number;
+  promise: Promise<Uint8Array<ArrayBuffer> | null>;
+};
+
 /**
  * Compressed-output cache scoped to one handler instance -- like
  * createResolutionCache above, this keeps the (potentially large)
@@ -684,14 +676,7 @@ function createCompressionCache() {
   // In-flight compressions, keyed the same as cache plus the file version
   // being compressed, so concurrent requests for a stale version in-flight
   // don't get handed a promise for an even-older result.
-  const pending = new Map<
-    string,
-    {
-      size: number;
-      mtimeMs: number;
-      promise: Promise<Uint8Array<ArrayBuffer> | null>;
-    }
-  >();
+  const pending = new Map<string, PendingCompression>();
 
   function touch(cacheKey: string, entry: CompressedEntry): void {
     const prev = cache.get(cacheKey);
@@ -726,7 +711,7 @@ function createCompressionCache() {
       cached.size === resolved.size &&
       cached.mtimeMs === resolved.mtimeMs
     ) {
-      touch(cacheKey, cached); // bump recency on hit
+      touch(cacheKey, cached);
       return cached.data;
     }
 
@@ -739,17 +724,7 @@ function createCompressionCache() {
       return inFlight.promise;
     }
 
-    const entry: {
-      size: number;
-      mtimeMs: number;
-      promise: Promise<Uint8Array<ArrayBuffer> | null>;
-    } = {
-      size: resolved.size,
-      mtimeMs: resolved.mtimeMs,
-      promise: Promise.resolve(null),
-    };
-
-    entry.promise = (async () => {
+    const promise = (async () => {
       try {
         const raw = await loadRaw();
         const data = await compress(encoding, raw);
@@ -761,15 +736,20 @@ function createCompressionCache() {
         return data;
       } catch {
         return null;
-      } finally {
-        if (pending.get(cacheKey)?.promise === entry.promise) {
-          pending.delete(cacheKey);
-        }
       }
     })();
 
+    const entry: PendingCompression = {
+      size: resolved.size,
+      mtimeMs: resolved.mtimeMs,
+      promise,
+    };
     pending.set(cacheKey, entry);
-    return entry.promise;
+    // Only drop our own entry: a newer version may have replaced it.
+    promise.finally(() => {
+      if (pending.get(cacheKey) === entry) pending.delete(cacheKey);
+    });
+    return promise;
   };
 
   // The byte budget above only bounds *how much* a stale entry can cost,
@@ -818,11 +798,11 @@ async function serveFile(
   // Injected HTML must not share the raw-file ETag or a later non-watch
   // run will 304 the old body (still requesting /__live.js).
   const etag = makeEtag(size, mtimeMs, opts.watch && htmlish ? "-live" : "");
-  const varies = opts.compress && isCompressible(type);
+  const compressible = opts.compress && isCompressible(type);
 
   if (isNotModified(req, etag, mtimeMs)) {
     const notModifiedHeaders = baseHeaders(etag, opts, htmlish, mtimeMs);
-    if (varies) notModifiedHeaders.set("Vary", "Accept-Encoding");
+    if (compressible) notModifiedHeaders.set("Vary", "Accept-Encoding");
     return new Response(null, {
       status: 304,
       headers: notModifiedHeaders,
@@ -832,12 +812,11 @@ async function serveFile(
   const headers = baseHeaders(etag, opts, htmlish, mtimeMs);
   headers.set("Content-Type", type);
   headers.set("Accept-Ranges", "bytes");
-  if (varies) headers.set("Vary", "Accept-Encoding");
+  if (compressible) headers.set("Vary", "Accept-Encoding");
 
+  const rangeHeader = req.headers.get("Range");
   const range =
-    req.headers.get("Range") && ifRangeSatisfied(req, etag, mtimeMs)
-      ? req.headers.get("Range")
-      : null;
+    rangeHeader && ifRangeSatisfied(req, etag, mtimeMs) ? rangeHeader : null;
   if (range && req.method === "GET") {
     const parsed = parseRange(range, size);
     if (parsed === "invalid") {
@@ -865,7 +844,7 @@ async function serveFile(
   }
 
   if (opts.watch && htmlish && req.method === "GET") {
-    if (opts.compress && isCompressible(type)) {
+    if (compressible) {
       // NUL can't appear in a real path, so it safely namespaces the
       // live-injected variant from the raw-file cache entry below.
       const res = await tryCompress(
@@ -883,12 +862,7 @@ async function serveFile(
     return new Response(html, { status: 200, headers });
   }
 
-  if (
-    opts.compress &&
-    req.method === "GET" &&
-    isCompressible(type) &&
-    size < 2_000_000
-  ) {
+  if (compressible && req.method === "GET" && size < 2_000_000) {
     const res = await tryCompress(
       getCompressed,
       req,
@@ -961,7 +935,7 @@ function parseRange(
   return { start, end };
 }
 
-function withCors(res: Response, opts: Options): Response {
+export function withCors(res: Response, opts: Options): Response {
   if (!opts.cors) return res;
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Headers", "*");

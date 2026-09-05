@@ -110,13 +110,8 @@ export function parseArgs(
     }
     if (a === "-p" || a === "--port") {
       const next = args[++i];
-      if (!next || next.startsWith("-")) {
-        fail(`Missing value for ${a}`);
-      }
-      const n = Number(next);
-      if (!Number.isInteger(n) || n < 0 || n > 65535)
-        fail(`Invalid port: ${next}`);
-      opts.port = n;
+      if (!next || next.startsWith("-")) fail(`Missing value for ${a}`);
+      opts.port = parsePort(next, next);
       portFlagSet = true;
       continue;
     }
@@ -127,10 +122,7 @@ export function parseArgs(
       continue;
     }
     if (a.startsWith("--port=")) {
-      const n = Number(a.slice("--port=".length));
-      if (!Number.isInteger(n) || n < 0 || n > 65535)
-        fail(`Invalid port: ${a}`);
-      opts.port = n;
+      opts.port = parsePort(a.slice("--port=".length), a);
       portFlagSet = true;
       continue;
     }
@@ -145,15 +137,21 @@ export function parseArgs(
   }
 
   if (!portFlagSet && env.PORT !== undefined) {
-    const n = Number(env.PORT);
-    if (!Number.isInteger(n) || n < 0 || n > 65535)
-      fail(`Invalid port: ${env.PORT}`);
-    opts.port = n;
+    opts.port = parsePort(env.PORT, env.PORT);
   }
   opts.portExplicit = portFlagSet;
 
   opts.root = resolve(root);
   return opts;
+}
+
+// `shown` is what the error message echoes back (the whole `--port=x` flag
+// for the inline form, the bare value otherwise).
+function parsePort(value: string, shown: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 65535)
+    fail(`Invalid port: ${shown}`);
+  return n;
 }
 
 function fail(msg: string): never {

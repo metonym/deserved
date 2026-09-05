@@ -1,7 +1,7 @@
 import { statSync, watch } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { relative, resolve } from "node:path";
-import { createHandler } from "./handlers";
+import { createHandler, withCors } from "./handlers";
 
 export type Options = {
   root: string;
@@ -239,21 +239,16 @@ function logReload(quiet: boolean, kind: "css" | "reload") {
   console.log(`${c.yellow}*${c.reset} ${kind}`);
 }
 
+function openCommand(url: string): string[] {
+  if (process.platform === "darwin") return ["open", url];
+  if (process.platform === "win32") return ["cmd", "/c", "start", "", url];
+  return ["xdg-open", url];
+}
+
 async function openBrowser(url: string): Promise<void> {
-  const platform = process.platform;
   try {
-    if (platform === "darwin") {
-      await Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" })
-        .exited;
-    } else if (platform === "win32") {
-      await Bun.spawn(["cmd", "/c", "start", "", url], {
-        stdout: "ignore",
-        stderr: "ignore",
-      }).exited;
-    } else {
-      await Bun.spawn(["xdg-open", url], { stdout: "ignore", stderr: "ignore" })
-        .exited;
-    }
+    await Bun.spawn(openCommand(url), { stdout: "ignore", stderr: "ignore" })
+      .exited;
   } catch {
     console.error(`Could not open browser for ${url}`);
   }
@@ -287,14 +282,7 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
 
   const serveFetch = async (req: Request) => {
     if (opts.cors && req.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Headers": "*",
-          "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-        },
-      });
+      return withCors(new Response(null, { status: 204 }), opts);
     }
     return fetch(req);
   };
@@ -360,11 +348,8 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
     watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (filename && isIgnoredWatchPath(filename)) return;
       // Clear before debouncing the reload broadcast, so a request racing
-      // the debounce window still sees the post-change resolution state.
+      // the debounce window still sees the post-change state.
       fetch.invalidateResolutionCache();
-      // A deleted path (e.g. a bundler's content-hashed output on rebuild)
-      // is never requested again, so its compressed bytes would otherwise
-      // never get evicted -- ride the same invalidation signal.
       fetch.invalidateCompressedCache();
       batch.add(filename);
       if (timer) clearTimeout(timer);

@@ -19,6 +19,8 @@
     "typecheck": "tsc",
     "lint": "biome check .",
     "lint:fix": "biome check --write . --unsafe",
+    "lint:changed": "biome check --changed --since=master --no-errors-on-unmatched .",
+    "lint:fix:changed": "biome check --write --unsafe --changed --since=master --no-errors-on-unmatched .",
     "test": "bun test tests",
     "test:unit": "bun test tests/unit",
     "test:e2e": "bun test tests/e2e",

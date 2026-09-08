@@ -30,7 +30,12 @@ function randomWord(rng: Rng, minLen: number, maxLen: number): string {
   return s;
 }
 
-function buildVocab(rng: Rng, count: number, minLen: number, maxLen: number): string[] {
+function buildVocab(
+  rng: Rng,
+  count: number,
+  minLen: number,
+  maxLen: number,
+): string[] {
   const words = new Set<string>();
   while (words.size < count) words.add(randomWord(rng, minLen, maxLen));
   return [...words];
@@ -163,7 +168,10 @@ const MAX_RATIO = 8;
  * incompressible) shape fails loudly instead of silently invalidating
  * compressed-scenario numbers.
  */
-export function assertRealistic(name: string, raw: string | Uint8Array): number {
+export function assertRealistic(
+  name: string,
+  raw: string | Uint8Array,
+): number {
   const bytes = typeof raw === "string" ? encoder.encode(raw) : raw;
   const compressed = Bun.zstdCompressSync(bytes);
   const ratio = bytes.byteLength / compressed.byteLength;

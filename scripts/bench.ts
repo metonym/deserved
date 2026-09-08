@@ -16,6 +16,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
+import { assertRealistic, fakeCss, fakeHtml, fakeJs, randomBytes } from "./bench-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "src/cli.ts");
@@ -106,45 +107,22 @@ function parseCliArgs(argv: string[]): {
   return { filter, duration };
 }
 
-function randomBytes(size: number): Uint8Array {
-  const buf = new Uint8Array(size);
-  const chunk = 65536;
-  for (let i = 0; i < size; i += chunk) {
-    crypto.getRandomValues(buf.subarray(i, Math.min(i + chunk, size)));
-  }
-  return buf;
-}
-
-function repeatToSize(unit: string, size: number): string {
-  const times = Math.ceil(size / unit.length);
-  return unit.repeat(times).slice(0, size);
-}
-
-function jsFixture(size: number): string {
-  const unit =
-    "function add(a, b) { return a + b; }\nconst value = add(1, 2);\nexport { value };\n";
-  return repeatToSize(unit, size);
-}
-
-function cssFixture(size: number): string {
-  const unit =
-    ".card { display: flex; padding: 1rem; margin: 0 auto; color: #333; }\n";
-  return repeatToSize(unit, size);
-}
-
-function htmlFixture(title: string): string {
-  const body = repeatToSize("<p>lorem ipsum dolor sit amet</p>\n", 700);
-  return `<!DOCTYPE html>\n<html><head><title>${title}</title></head><body>\n${body}</body></html>\n`;
-}
-
 function buildFixture(): string {
   const dir = mkdtempSync(join(tmpdir(), "deserved-bench-"));
-  writeFileSync(join(dir, "index.html"), htmlFixture("bench"));
-  writeFileSync(join(dir, "app.js"), jsFixture(50_000));
-  writeFileSync(join(dir, "style.css"), cssFixture(10_000));
+  const html = fakeHtml(24_000, "bench");
+  const js = fakeJs(50_000);
+  const css = fakeCss(10_000);
+  const jsCompressed = assertRealistic("app.js", js);
+  assertRealistic("index.html", html);
+  assertRealistic("style.css", css);
+  console.log(`fixture app.js: ${js.length} B raw, ${jsCompressed} B zstd`);
+
+  writeFileSync(join(dir, "index.html"), html);
+  writeFileSync(join(dir, "app.js"), js);
+  writeFileSync(join(dir, "style.css"), css);
   writeFileSync(join(dir, "img.bin"), randomBytes(500_000));
   mkdirSync(join(dir, "docs/guide"), { recursive: true });
-  writeFileSync(join(dir, "docs/guide/index.html"), htmlFixture("guide"));
+  writeFileSync(join(dir, "docs/guide/index.html"), fakeHtml(800, "guide"));
   return dir;
 }
 

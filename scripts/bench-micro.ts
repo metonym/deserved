@@ -31,10 +31,16 @@ import {
   shouldSpaFallback,
 } from "../src/handlers";
 import { DEFAULT_OPTIONS } from "../src/server";
+import { assertRealistic, fakeHtml, fakeJs } from "./bench-fixture";
 
 const root = mkdtempSync(join(tmpdir(), "deserved-bench-micro-"));
-writeFileSync(join(root, "index.html"), "<!DOCTYPE html><body>ok</body>");
-writeFileSync(join(root, "app.js"), "console.log(1);\n".repeat(2000));
+const appJs = fakeJs(50_000);
+const indexHtml = fakeHtml(24_000, "bench");
+const appJsCompressed = assertRealistic("app.js", appJs);
+assertRealistic("index.html", indexHtml);
+console.log(`fixture app.js: ${appJs.length} B raw, ${appJsCompressed} B zstd`);
+writeFileSync(join(root, "index.html"), indexHtml);
+writeFileSync(join(root, "app.js"), appJs);
 mkdirSync(join(root, "docs"), { recursive: true });
 for (let i = 0; i < 40; i++) {
   writeFileSync(join(root, "docs", `page-${i}.html`), "<p>hi</p>");

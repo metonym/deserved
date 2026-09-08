@@ -504,6 +504,22 @@ type HandlerContext = {
   notFound: NotFoundCache | null;
 };
 
+// Cheaper than `new URL(req.url).pathname` (~74ns vs ~4ns) on the hot
+// path; only the pathname is needed there, and Bun's req.url is always an
+// absolute URL (http://host:port/path?query#hash).
+function extractPathname(url: string): string {
+  const schemeEnd = url.indexOf("//");
+  const start = url.indexOf("/", schemeEnd === -1 ? 0 : schemeEnd + 2);
+  if (start === -1) return "/";
+  let end = url.length;
+  const q = url.indexOf("?", start);
+  if (q !== -1 && q < end) end = q;
+  const h = url.indexOf("#", start);
+  if (h !== -1 && h < end) end = h;
+  const path = url.slice(start, end);
+  return path === "" ? "/" : path;
+}
+
 export function createHandler(opts: Options, hub?: Hub): Handler {
   const rootAbs = resolve(opts.root);
   const realRoot = realpathRoot(rootAbs);
@@ -519,27 +535,27 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
   };
 
   const handle = async function handle(req: Request): Promise<Response> {
-    const url = new URL(req.url);
+    const rawPathname = extractPathname(req.url);
     const method = req.method.toUpperCase();
 
     let pathname: string;
-    if (url.pathname.includes("%")) {
+    if (rawPathname.includes("%")) {
       try {
-        pathname = decodeURIComponent(url.pathname);
+        pathname = decodeURIComponent(rawPathname);
       } catch {
         const res = new Response("Bad Request", { status: 400 });
-        return finish(method, url.pathname, opts, res);
+        return finish(method, rawPathname, opts, res);
       }
     } else {
-      pathname = url.pathname;
+      pathname = rawPathname;
     }
 
     try {
-      return await handleDecoded(req, method, pathname, url, ctx);
+      return await handleDecoded(req, method, pathname, rawPathname, ctx);
     } catch (err) {
       console.error(err);
       const res = new Response("Internal Server Error", { status: 500 });
-      return finish(method, url.pathname, opts, res);
+      return finish(method, rawPathname, opts, res);
     }
   } as Handler;
 
@@ -563,10 +579,13 @@ function finish(
   return headify(method, withCors(res, opts));
 }
 
-function directoryRedirect(url: URL): Response {
+// rawPathname (not the decoded `pathname`) so a percent-encoded request
+// like /my%20docs redirects to /my%20docs/, not an unencoded literal
+// space. reqUrl is only parsed here, lazily, for the query string.
+function directoryRedirect(rawPathname: string, reqUrl: string): Response {
   return new Response(null, {
     status: 301,
-    headers: { Location: `${url.pathname}/${url.search}` },
+    headers: { Location: `${rawPathname}/${new URL(reqUrl).search}` },
   });
 }
 
@@ -584,7 +603,7 @@ async function handleDecoded(
   req: Request,
   method: string,
   pathname: string,
-  url: URL,
+  rawPathname: string,
   ctx: HandlerContext,
 ): Promise<Response> {
   const { opts, hub, resolveCached, resolveDirCached, getCompressed } = ctx;
@@ -627,7 +646,7 @@ async function handleDecoded(
 
   if (resolved) {
     if (resolved.kind === "dir-index" && !pathname.endsWith("/")) {
-      return send(directoryRedirect(url));
+      return send(directoryRedirect(rawPathname, req.url));
     }
     return send(await serveFile(getCompressed, req, resolved, opts));
   }
@@ -644,7 +663,8 @@ async function handleDecoded(
   if (opts.dir) {
     const dir = resolveDirCached(pathname);
     if (dir) {
-      if (!pathname.endsWith("/")) return send(directoryRedirect(url));
+      if (!pathname.endsWith("/"))
+        return send(directoryRedirect(rawPathname, req.url));
       const html = directoryListing(pathname, listDir(dir));
       return send(htmlPage(html, opts));
     }
@@ -836,7 +856,7 @@ function createCompressionCache() {
 async function tryCompress(
   getCompressed: GetCompressed,
   req: Request,
-  headers: Headers,
+  headers: Record<string, string>,
   cacheKey: { key: string; size: number; mtimeMs: number },
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
 ): Promise<Response | null> {
@@ -844,10 +864,10 @@ async function tryCompress(
   if (!encoding) return null;
   const compressed = await getCompressed(cacheKey, encoding, loadRaw);
   if (!compressed) return null;
-  headers.set("Content-Encoding", encoding);
-  headers.set("Content-Length", String(compressed.size));
-  headers.delete("Accept-Ranges");
-  headers.set("Vary", "Accept-Encoding");
+  headers["Content-Encoding"] = encoding;
+  headers["Content-Length"] = String(compressed.size);
+  delete headers["Accept-Ranges"];
+  headers.Vary = "Accept-Encoding";
   return new Response(compressed, { status: 200, headers });
 }
 
@@ -868,7 +888,7 @@ async function serveFile(
 
   if (isNotModified(req, etag, mtimeMs)) {
     const notModifiedHeaders = baseHeaders(etag, opts, htmlish, mtimeMs);
-    if (compressible) notModifiedHeaders.set("Vary", "Accept-Encoding");
+    if (compressible) notModifiedHeaders.Vary = "Accept-Encoding";
     return new Response(null, {
       status: 304,
       headers: notModifiedHeaders,
@@ -876,9 +896,9 @@ async function serveFile(
   }
 
   const headers = baseHeaders(etag, opts, htmlish, mtimeMs);
-  headers.set("Content-Type", type);
-  headers.set("Accept-Ranges", "bytes");
-  if (compressible) headers.set("Vary", "Accept-Encoding");
+  headers["Content-Type"] = type;
+  headers["Accept-Ranges"] = "bytes";
+  if (compressible) headers.Vary = "Accept-Encoding";
 
   const rangeHeader = req.headers.get("Range");
   const range =
@@ -886,7 +906,7 @@ async function serveFile(
   if (range && req.method === "GET") {
     const parsed = parseRange(range, size);
     if (parsed === "invalid") {
-      headers.set("Content-Range", `bytes */${size}`);
+      headers["Content-Range"] = `bytes */${size}`;
       return new Response(null, {
         status: 416,
         headers,
@@ -895,8 +915,8 @@ async function serveFile(
     if (parsed) {
       const { start, end } = parsed;
       const length = end - start + 1;
-      headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
-      headers.set("Content-Length", String(length));
+      headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
+      headers["Content-Length"] = String(length);
       return new Response(file.slice(start, end + 1), {
         status: 206,
         headers,
@@ -905,7 +925,7 @@ async function serveFile(
   }
 
   if (req.method === "HEAD") {
-    headers.set("Content-Length", String(size));
+    headers["Content-Length"] = String(size);
     return new Response(null, { status: 200, headers });
   }
 
@@ -924,7 +944,7 @@ async function serveFile(
     }
 
     const html = injectLiveReload(await file.text());
-    headers.set("Content-Length", String(Buffer.byteLength(html)));
+    headers["Content-Length"] = String(Buffer.byteLength(html));
     return new Response(html, { status: 200, headers });
   }
 
@@ -939,27 +959,41 @@ async function serveFile(
     if (res) return res;
   }
 
-  headers.set("Content-Length", String(size));
+  headers["Content-Length"] = String(size);
   return new Response(file, { status: 200, headers });
 }
 
+// Requests under load repeatedly hit the same handful of files, so the
+// same mtimeMs recurs far more often than it changes; skip reformatting
+// the date string when it hasn't.
+let lastMtimeMs = Number.NaN;
+let lastHttpDate = "";
+
+function httpDate(mtimeMs: number): string {
+  if (mtimeMs !== lastMtimeMs) {
+    lastMtimeMs = mtimeMs;
+    lastHttpDate = new Date(mtimeMs).toUTCString();
+  }
+  return lastHttpDate;
+}
+
+// Plain object, not Headers: `new Headers()` + 5 `set()` calls costs
+// ~205ns vs ~5ns for an object literal, and `new Response(..., {headers})`
+// accepts either. Response still builds a real Headers instance from it.
 export function baseHeaders(
   etag: string,
   opts: Options,
   isHtmlFile: boolean,
   mtimeMs: number,
-): Headers {
-  const headers = new Headers();
-  headers.set("ETag", etag);
-  headers.set("Last-Modified", new Date(mtimeMs).toUTCString());
-
-  if (opts.watch || !opts.cache || isHtmlFile) {
-    headers.set("Cache-Control", "no-cache");
-    return headers;
-  }
-
-  headers.set("Cache-Control", "public, max-age=31536000, immutable");
-  return headers;
+): Record<string, string> {
+  return {
+    ETag: etag,
+    "Last-Modified": httpDate(mtimeMs),
+    "Cache-Control":
+      opts.watch || !opts.cache || isHtmlFile
+        ? "no-cache"
+        : "public, max-age=31536000, immutable",
+  };
 }
 
 export function parseRange(

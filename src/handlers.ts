@@ -135,7 +135,7 @@ export function acceptsHtml(req: Request): boolean {
   return accept.includes("text/html") || accept.includes("application/xhtml");
 }
 
-type CompressionEncoding = "zstd" | "gzip";
+export type CompressionEncoding = "zstd" | "gzip";
 
 // zstd compresses faster and smaller than gzip, but not every client speaks
 // it yet (e.g. Safari), so negotiate rather than replacing gzip outright.
@@ -153,7 +153,7 @@ export function shouldSpaFallback(pathname: string): boolean {
   return pathname.indexOf(".", slashIdx + 1) === -1;
 }
 
-function resolveFileWithRoot(
+export function resolveFileWithRoot(
   rootAbs: string,
   realRoot: string | null,
   pathname: string,
@@ -307,7 +307,7 @@ export function realContainedPath(
   return realRoot ? containedPath(realRoot, full) : null;
 }
 
-function resolveDirWithRoot(
+export function resolveDirWithRoot(
   rootAbs: string,
   realRoot: string | null,
   pathname: string,
@@ -640,7 +640,7 @@ async function gzipCompress(
   return new Uint8Array(await new Response(cs.readable).arrayBuffer());
 }
 
-async function compress(
+export async function compress(
   encoding: CompressionEncoding,
   raw: Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
@@ -877,7 +877,7 @@ async function serveFile(
   return new Response(file, { status: 200, headers });
 }
 
-function baseHeaders(
+export function baseHeaders(
   etag: string,
   opts: Options,
   isHtmlFile: boolean,
@@ -896,7 +896,7 @@ function baseHeaders(
   return headers;
 }
 
-function parseRange(
+export function parseRange(
   header: string,
   size: number,
 ): { start: number; end: number } | null | "invalid" {

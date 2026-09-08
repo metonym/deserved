@@ -617,7 +617,9 @@ async function handleDecoded(
 type CompressedEntry = {
   size: number;
   mtimeMs: number;
-  data: Uint8Array<ArrayBuffer>;
+  // Blob, not Uint8Array: `new Response(Blob)` is ~95ns regardless of size
+  // while `new Response(Uint8Array)` copies the buffer on every hit.
+  data: Blob;
 };
 
 // Bounded by total retained bytes, not entry count -- payload sizes vary
@@ -654,12 +656,12 @@ type GetCompressed = (
   resolved: { key: string; size: number; mtimeMs: number },
   encoding: CompressionEncoding,
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
-) => Promise<Uint8Array<ArrayBuffer> | null>;
+) => Promise<Blob | null>;
 
 type PendingCompression = {
   size: number;
   mtimeMs: number;
-  promise: Promise<Uint8Array<ArrayBuffer> | null>;
+  promise: Promise<Blob | null>;
 };
 
 /**
@@ -682,17 +684,17 @@ function createCompressionCache() {
     const prev = cache.get(cacheKey);
     if (prev) {
       cache.delete(cacheKey);
-      bytes -= prev.data.byteLength;
+      bytes -= prev.data.size;
     }
     cache.set(cacheKey, entry);
-    bytes += entry.data.byteLength;
+    bytes += entry.data.size;
 
     while (bytes > COMPRESSED_CACHE_BYTE_BUDGET && cache.size > 1) {
       const oldestKey = cache.keys().next().value;
       if (oldestKey === undefined) break;
       const oldest = cache.get(oldestKey);
       cache.delete(oldestKey);
-      if (oldest) bytes -= oldest.data.byteLength;
+      if (oldest) bytes -= oldest.data.size;
     }
   }
 
@@ -727,7 +729,7 @@ function createCompressionCache() {
     const promise = (async () => {
       try {
         const raw = await loadRaw();
-        const data = await compress(encoding, raw);
+        const data = new Blob([await compress(encoding, raw)]);
         touch(cacheKey, {
           size: resolved.size,
           mtimeMs: resolved.mtimeMs,
@@ -779,7 +781,7 @@ async function tryCompress(
   const compressed = await getCompressed(cacheKey, encoding, loadRaw);
   if (!compressed) return null;
   headers.set("Content-Encoding", encoding);
-  headers.set("Content-Length", String(compressed.byteLength));
+  headers.set("Content-Length", String(compressed.size));
   headers.delete("Accept-Ranges");
   headers.set("Vary", "Accept-Encoding");
   return new Response(compressed, { status: 200, headers });
@@ -868,7 +870,7 @@ async function serveFile(
       req,
       headers,
       { key: path, size, mtimeMs },
-      async () => new Uint8Array(await file.arrayBuffer()),
+      () => file.bytes(),
     );
     if (res) return res;
   }

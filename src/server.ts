@@ -165,9 +165,34 @@ const c = {
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: strip control chars from logs
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: cheap pre-check so the common clean-path case skips replace()
+const HAS_CONTROL = /[\x00-\x1f\x7f]/;
 
 function sanitizeForLog(s: string): string {
-  return s.replace(CONTROL_CHARS, "");
+  return HAS_CONTROL.test(s) ? s.replace(CONTROL_CHARS, "") : s;
+}
+
+const ICON_OK = `${c.green}✓${c.reset}`;
+const ICON_REDIRECT = `${c.yellow}○${c.reset}`;
+const ICON_ERR = `${c.red}✗${c.reset}`;
+const DIM = c.dim;
+const RESET = c.reset;
+
+// Collapses many synchronous per-request writes into one per tick: a
+// console.log/write per request costs a syscall each, which adds up under
+// load. Lines queue here and flush once, at the end of the current
+// microtask queue.
+let pendingLines: string[] = [];
+
+function scheduleFlush(): void {
+  if (pendingLines.length === 1) queueMicrotask(flushLogs);
+}
+
+export function flushLogs(): void {
+  if (pendingLines.length === 0) return;
+  const out = pendingLines.join("\n");
+  pendingLines = [];
+  process.stdout.write(`${out}\n`);
 }
 
 export function logRequest(
@@ -177,15 +202,11 @@ export function logRequest(
   quiet: boolean,
 ) {
   if (quiet) return;
-  const icon =
-    status < 300
-      ? `${c.green}✓${c.reset}`
-      : status < 400
-        ? `${c.yellow}○${c.reset}`
-        : `${c.red}✗${c.reset}`;
-  console.log(
-    `${icon} ${c.dim}${method}${c.reset} ${status} ${sanitizeForLog(path)}`,
+  const icon = status < 300 ? ICON_OK : status < 400 ? ICON_REDIRECT : ICON_ERR;
+  pendingLines.push(
+    `${icon} ${DIM}${method}${RESET} ${status} ${sanitizeForLog(path)}`,
   );
+  scheduleFlush();
 }
 
 function logInfo(msg: string, quiet = false) {
@@ -368,6 +389,7 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
     watcher?.close();
     hub?.close();
     await server.stop();
+    flushLogs();
     logInfo("server stopped", opts.quiet);
   };
 

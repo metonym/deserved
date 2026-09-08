@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import {
+  flushLogs,
   injectLiveReload,
   LIVE_PATH,
   LIVE_SCRIPT,
@@ -38,26 +39,35 @@ describe("LIVE_SCRIPT", () => {
 });
 
 describe("logRequest", () => {
+  // Request lines are batched and flushed to process.stdout once per tick
+  // (see flushLogs); force that flush so the write is observable
+  // synchronously here instead of on the next microtask.
   test("strips control characters from the path so terminal escapes can't be injected", () => {
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    const writeSpy = spyOn(process.stdout, "write").mockImplementation(
+      () => true,
+    );
     try {
       logRequest("GET", 404, "/\x1b[31mFAKE-ERROR\x1b[0m", false);
-      const line = logSpy.mock.calls[0]?.[0] as string;
+      flushLogs();
+      const line = writeSpy.mock.calls[0]?.[0] as string;
       expect(line).not.toContain("\x1b[31mFAKE-ERROR");
       expect(line).toContain("/[31mFAKE-ERROR[0m");
     } finally {
-      logSpy.mockRestore();
+      writeSpy.mockRestore();
     }
   });
 
   test("logs normal paths unchanged", () => {
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    const writeSpy = spyOn(process.stdout, "write").mockImplementation(
+      () => true,
+    );
     try {
       logRequest("GET", 200, "/index.html", false);
-      const line = logSpy.mock.calls[0]?.[0] as string;
+      flushLogs();
+      const line = writeSpy.mock.calls[0]?.[0] as string;
       expect(line).toContain("/index.html");
     } finally {
-      logSpy.mockRestore();
+      writeSpy.mockRestore();
     }
   });
 });

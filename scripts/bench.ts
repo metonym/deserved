@@ -11,15 +11,24 @@
  * machines or against other servers.
  *
  * Usage: bun bench [--filter <scenario>] [--duration <seconds>]
+ *                   [--runs <n>] [--save <path>] [--compare <path>]
+ *
+ * --runs n     run each scenario n times (one warmup, then n measured runs)
+ *              and report the median-by-req/s run.
+ * --save path  write the result JSON (pretty-printed) to path, for a later
+ *              --compare.
+ * --compare path  diff this run's scenarios against a saved JSON file by
+ *                 name and print percent-delta columns (|Δ| < 5% -> "~").
  */
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import {
@@ -161,19 +170,28 @@ class RssSampler {
 function parseCliArgs(argv: string[]): {
   filter: string | null;
   duration: number;
+  runs: number;
+  save: string | null;
+  compare: string | null;
 } {
   let filter: string | null = null;
   let duration = DEFAULT_DURATION_S;
+  let runs = 1;
+  let save: string | null = null;
+  let compare: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--filter") filter = argv[++i] ?? null;
     else if (a === "--duration")
       duration = Number(argv[++i]) || DEFAULT_DURATION_S;
+    else if (a === "--runs") runs = Math.max(1, Number(argv[++i]) || 1);
+    else if (a === "--save") save = argv[++i] ?? null;
+    else if (a === "--compare") compare = argv[++i] ?? null;
   }
-  return { filter, duration };
+  return { filter, duration, runs, save, compare };
 }
 
-function buildFixture(): string {
+function buildFixture(): { dir: string; jsCompressedBytes: number } {
   const dir = mkdtempSync(join(tmpdir(), "deserved-bench-"));
   const html = fakeHtml(24_000, "bench");
   const js = fakeJs(50_000);
@@ -189,7 +207,7 @@ function buildFixture(): string {
   writeFileSync(join(dir, "img.bin"), randomBytes(500_000));
   mkdirSync(join(dir, "docs/guide"), { recursive: true });
   writeFileSync(join(dir, "docs/guide/index.html"), fakeHtml(800, "guide"));
-  return dir;
+  return { dir, jsCompressedBytes: jsCompressed };
 }
 
 type RunningServer = { base: string; pid: number; stop: () => Promise<void> };
@@ -346,7 +364,7 @@ function percentile(sortedAsc: number[], p: number): number {
   return sortedAsc[idx] ?? 0;
 }
 
-async function runScenario(
+async function measureOnce(
   base: string,
   scenario: Scenario,
   durationS: number,
@@ -359,8 +377,6 @@ async function runScenario(
     await res.arrayBuffer();
     return performance.now() - t0;
   };
-
-  await measure(CONCURRENCY, WARMUP_S, fire);
 
   const rssBeforeKb = await sampleRssKb(serverPid);
   const cpuBefore = await cpuSeconds(serverPid);
@@ -395,6 +411,37 @@ async function runScenario(
   };
 }
 
+/** Middle element by req/s; for an even count, the lower of the two middles. */
+function medianByReqPerSec(runs: ScenarioResult[]): ScenarioResult {
+  const sorted = [...runs].sort((a, b) => a.reqPerSec - b.reqPerSec);
+  // biome-ignore lint/style/noNonNullAssertion: runs is never empty
+  return sorted[Math.floor((sorted.length - 1) / 2)]!;
+}
+
+async function runScenario(
+  base: string,
+  scenario: Scenario,
+  durationS: number,
+  serverPid: number,
+  runs: number,
+): Promise<ScenarioResult> {
+  const url = base + scenario.path;
+  const fire = async () => {
+    const t0 = performance.now();
+    const res = await fetch(url, { headers: scenario.headers });
+    await res.arrayBuffer();
+    return performance.now() - t0;
+  };
+
+  await measure(CONCURRENCY, WARMUP_S, fire);
+
+  const attempts: ScenarioResult[] = [];
+  for (let i = 0; i < runs; i++) {
+    attempts.push(await measureOnce(base, scenario, durationS, serverPid));
+  }
+  return medianByReqPerSec(attempts);
+}
+
 function fmtMb(kb: number | null): string {
   return kb === null ? "n/a" : (kb / 1024).toFixed(1);
 }
@@ -409,7 +456,51 @@ function fmtCpu(us: number | null): string {
   return us === null ? "n/a" : us.toFixed(2);
 }
 
-function printTable(results: ScenarioResult[]) {
+// Below this absolute percent, a delta is noise rather than a real change.
+const NOISE_PCT = 5;
+
+function pctDelta(before: number, after: number): number | null {
+  return before === 0 ? null : ((after - before) / before) * 100;
+}
+
+function fmtPctDelta(pct: number | null): string {
+  if (pct === null) return "n/a";
+  if (Math.abs(pct) < NOISE_PCT) return "~";
+  return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+}
+
+function fmtPctDeltaCell(
+  before: number | null | undefined,
+  after: number,
+): string {
+  if (before === null || before === undefined) return "n/a";
+  return fmtPctDelta(pctDelta(before, after));
+}
+
+type Judgement = "improved" | "regressed" | "unchanged" | "n/a";
+
+/** cpu µs/req when both runs have it, else req/s. Negative cpu/p99 delta is an improvement; positive req/s delta is. */
+function judgeScenario(
+  r: ScenarioResult,
+  baseline: ScenarioResult | undefined,
+): Judgement {
+  if (!baseline) return "n/a";
+  const cpuPct =
+    r.cpuUsPerReq !== null && baseline.cpuUsPerReq !== null
+      ? pctDelta(baseline.cpuUsPerReq, r.cpuUsPerReq)
+      : null;
+  const pct = cpuPct ?? pctDelta(baseline.reqPerSec, r.reqPerSec);
+  const positiveIsGood = cpuPct === null;
+  if (pct === null) return "n/a";
+  if (Math.abs(pct) < NOISE_PCT) return "unchanged";
+  const good = positiveIsGood ? pct > 0 : pct < 0;
+  return good ? "improved" : "regressed";
+}
+
+function printTable(
+  results: ScenarioResult[],
+  baseline: Map<string, ScenarioResult> | null,
+) {
   const headers = [
     "scenario",
     "req/s",
@@ -420,18 +511,31 @@ function printTable(results: ScenarioResult[]) {
     "errors",
     "rss peak (MB)",
     "rss Δ (MB)",
+    ...(baseline ? ["Δ req/s", "Δ cpu", "Δ p99"] : []),
   ];
-  const rows = results.map((r) => [
-    r.name,
-    r.reqPerSec.toFixed(0),
-    fmtCpu(r.cpuUsPerReq),
-    r.p50.toFixed(2),
-    r.p99.toFixed(2),
-    String(r.requests),
-    String(r.errors),
-    fmtMb(r.rssPeakKb),
-    fmtMbDelta(r.rssBeforeKb, r.rssPeakKb),
-  ]);
+  const rows = results.map((r) => {
+    const b = baseline?.get(r.name);
+    return [
+      r.name,
+      r.reqPerSec.toFixed(0),
+      fmtCpu(r.cpuUsPerReq),
+      r.p50.toFixed(2),
+      r.p99.toFixed(2),
+      String(r.requests),
+      String(r.errors),
+      fmtMb(r.rssPeakKb),
+      fmtMbDelta(r.rssBeforeKb, r.rssPeakKb),
+      ...(baseline
+        ? [
+            fmtPctDeltaCell(b?.reqPerSec, r.reqPerSec),
+            b?.cpuUsPerReq != null && r.cpuUsPerReq !== null
+              ? fmtPctDeltaCell(b.cpuUsPerReq, r.cpuUsPerReq)
+              : "n/a",
+            fmtPctDeltaCell(b?.p99, r.p99),
+          ]
+        : []),
+    ];
+  });
 
   const widths = headers.map((h, i) =>
     Math.max(h.length, ...rows.map((row) => row[i]?.length ?? 0)),
@@ -443,6 +547,17 @@ function printTable(results: ScenarioResult[]) {
   console.log(formatRow(headers));
   console.log(widths.map((w) => "-".repeat(w)).join("  "));
   for (const row of rows) console.log(formatRow(row));
+
+  if (baseline) {
+    const counts = { improved: 0, regressed: 0, unchanged: 0 };
+    for (const r of results) {
+      const j = judgeScenario(r, baseline.get(r.name));
+      if (j !== "n/a") counts[j]++;
+    }
+    console.log(
+      `${counts.improved} improved, ${counts.regressed} regressed, ${counts.unchanged} unchanged (threshold ${NOISE_PCT}%)`,
+    );
+  }
 }
 
 /** Groups scenarios by their (JSON-stringified) server flags, in first-seen order. */
@@ -457,9 +572,30 @@ function groupByServerFlags(scenarios: Scenario[]): Map<string, Scenario[]> {
   return groups;
 }
 
+function gitSha(): string | null {
+  try {
+    const result = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], {
+      cwd: ROOT,
+    });
+    if (result.exitCode !== 0) return null;
+    return result.stdout.toString().trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function loadCompareBaseline(path: string): Map<string, ScenarioResult> {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+    results: ScenarioResult[];
+  };
+  return new Map(parsed.results.map((r) => [r.name, r]));
+}
+
 async function main() {
-  const { filter, duration } = parseCliArgs(process.argv.slice(2));
-  const fixtureDir = buildFixture();
+  const { filter, duration, runs, save, compare } = parseCliArgs(
+    process.argv.slice(2),
+  );
+  const { dir: fixtureDir, jsCompressedBytes } = buildFixture();
 
   const scenarios = buildScenarios().filter(
     (s) => !filter || s.name.includes(filter),
@@ -469,6 +605,8 @@ async function main() {
     console.error(`No scenarios match --filter "${filter}"`);
     process.exit(1);
   }
+
+  const compareBaseline = compare ? loadCompareBaseline(compare) : null;
 
   const results: ScenarioResult[] = [];
   let baselineRssKb: number | null = null;
@@ -496,7 +634,13 @@ async function main() {
           }
           console.log(`Running ${scenario.name}...`);
           results.push(
-            await runScenario(server.base, scenario, duration, server.pid),
+            await runScenario(
+              server.base,
+              scenario,
+              duration,
+              server.pid,
+              runs,
+            ),
           );
         }
 
@@ -507,7 +651,7 @@ async function main() {
     }
 
     console.log();
-    printTable(results);
+    printTable(results, compareBaseline);
     console.log();
     console.log(
       `rss baseline: ${fmtMb(baselineRssKb)} MB, final: ${fmtMb(finalRssKb)} MB, growth: ${fmtMbDelta(baselineRssKb, finalRssKb)} MB`,
@@ -517,9 +661,26 @@ async function main() {
         "note: non-quiet scenarios' stdout is discarded to /dev/null, so their cpu µs/req is a lower bound on real terminal logging cost.",
       );
     }
-    console.log(
-      `bench-json: ${JSON.stringify({ concurrency: CONCURRENCY, warmupS: WARMUP_S, durationS: duration, baselineRssKb, finalRssKb, results })}`,
-    );
+
+    const output = {
+      date: new Date().toISOString(),
+      bunVersion: Bun.version,
+      cpu: cpus()[0]?.model ?? null,
+      gitSha: gitSha(),
+      concurrency: CONCURRENCY,
+      warmupS: WARMUP_S,
+      durationS: duration,
+      runs,
+      fixtureCompressedBytes: jsCompressedBytes,
+      baselineRssKb,
+      finalRssKb,
+      results,
+    };
+
+    if (save) {
+      writeFileSync(save, `${JSON.stringify(output, null, 2)}\n`);
+    }
+    console.log(`bench-json: ${JSON.stringify(output)}`);
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });
   }

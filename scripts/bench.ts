@@ -21,6 +21,7 @@
  *                 name and print percent-delta columns (|Δ| < 5% -> "~").
  */
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -419,6 +420,12 @@ function buildScenarios(): Scenario[] {
       headers: { "Accept-Encoding": "zstd" },
       server: ["-q", "--watch"],
     },
+    {
+      name: "watch-html",
+      path: "/",
+      headers: { "Accept-Encoding": "zstd" },
+      server: ["-q", "--watch"],
+    },
     { name: "etag-304", path: "/app.js" },
     { name: "html-root-logging", path: "/", server: [] },
   ];
@@ -725,6 +732,76 @@ async function measureStartup(
   };
 }
 
+const SSE_CLIENT_COUNT = 50;
+const SSE_BROADCAST_ROUNDS = 20;
+const SSE_TOUCH_INTERVAL_MS = 250;
+
+async function openSseClient(base: string) {
+  const res = await fetch(`${base}/__events`);
+  if (!res.body) throw new Error("SSE response had no body");
+  return res.body.getReader();
+}
+
+// Derived from an actual zero-arg call rather than hand-typed:
+// getReader() is overloaded (default vs BYOB), and TS's ReturnType<>
+// resolves an overloaded method type to its last signature, not the one
+// a real call site picks -- pulling the type off openSseClient's actual
+// return avoids that trap.
+type SseReader = Awaited<ReturnType<typeof openSseClient>>;
+
+async function openSseClients(
+  base: string,
+  count: number,
+): Promise<SseReader[]> {
+  const readers: SseReader[] = [];
+  for (let i = 0; i < count; i++) {
+    readers.push(await openSseClient(base));
+  }
+  return readers;
+}
+
+function closeSseClients(readers: SseReader[]): void {
+  for (const r of readers) {
+    r.cancel().catch(() => {});
+  }
+}
+
+/** Awaits one reader seeing a chunk containing `needle`, across any number of intervening chunks. */
+async function readUntil(reader: SseReader, needle: string): Promise<void> {
+  const decoder = new TextDecoder();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    if (value && decoder.decode(value).includes(needle)) return;
+  }
+}
+
+/**
+ * Touches style.css (the watcher debounces 80ms) and times every connected
+ * SSE client receiving the resulting `data: css` reload event.
+ */
+async function measureSseBroadcast(
+  fixtureDir: string,
+  readers: SseReader[],
+): Promise<{ p50: number; max: number }> {
+  const cssPath = join(fixtureDir, "style.css");
+  const samples: number[] = [];
+
+  for (let i = 0; i < SSE_BROADCAST_ROUNDS; i++) {
+    const t0 = performance.now();
+    appendFileSync(cssPath, "/* touch */\n");
+    await Promise.all(readers.map((r) => readUntil(r, "data: css")));
+    samples.push(performance.now() - t0);
+    await Bun.sleep(SSE_TOUCH_INTERVAL_MS);
+  }
+
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    p50: sorted[Math.floor(sorted.length / 2)] ?? 0,
+    max: Math.max(...sorted),
+  };
+}
+
 async function main() {
   const { filter, duration, runs, save, compare } = parseCliArgs(
     process.argv.slice(2),
@@ -748,6 +825,7 @@ async function main() {
   }
 
   const compareBaseline = compare ? loadCompareBaseline(compare) : null;
+  const runWatchExtras = !filter || /watch|sse/i.test(filter);
 
   const results: ScenarioResult[] = [];
   let baselineRssKb: number | null = null;
@@ -759,11 +837,17 @@ async function main() {
       const flags = JSON.parse(key) as string[];
       if (!flags.includes("-q") && !flags.includes("--quiet"))
         usedNonQuiet = true;
+      const isWatchGroup = flags.includes("--watch") && runWatchExtras;
 
       const server = await startServer(fixtureDir, flags);
+      let sseReaders: SseReader[] = [];
       try {
         if (baselineRssKb === null)
           baselineRssKb = await sampleRssKb(server.pid);
+
+        if (isWatchGroup) {
+          sseReaders = await openSseClients(server.base, SSE_CLIENT_COUNT);
+        }
 
         for (const scenario of group) {
           if (scenario.name === "etag-304" && !scenario.headers) {
@@ -785,8 +869,16 @@ async function main() {
           );
         }
 
+        if (isWatchGroup && sseReaders.length > 0) {
+          const broadcast = await measureSseBroadcast(fixtureDir, sseReaders);
+          console.log(
+            `sse broadcast (${SSE_CLIENT_COUNT} clients): p50 ${broadcast.p50.toFixed(0)} ms, max ${broadcast.max.toFixed(0)} ms`,
+          );
+        }
+
         finalRssKb = await sampleRssKb(server.pid);
       } finally {
+        closeSseClients(sseReaders);
         await server.stop();
       }
     }

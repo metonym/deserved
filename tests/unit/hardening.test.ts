@@ -145,23 +145,55 @@ describe("formatUrl", () => {
 });
 
 describe("resolution cache: content freshness", () => {
-  test("an edit is visible on the very next request, watch or not", async () => {
-    for (const watch of [false, true]) {
-      const root = mkdtempSync(join(tmpdir(), "rescache-fresh-"));
-      try {
-        const path = join(root, "file.txt");
-        writeFileSync(path, "before");
-        const handle = createHandler(makeOpts(root, { watch }));
+  test("non-watch: an edit is visible on the very next request", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rescache-fresh-"));
+    try {
+      const path = join(root, "file.txt");
+      writeFileSync(path, "before");
+      const handle = createHandler(makeOpts(root, { watch: false }));
 
-        const first = await handle(new Request("http://x/file.txt"));
-        expect(await first.text()).toBe("before");
+      const first = await handle(new Request("http://x/file.txt"));
+      expect(await first.text()).toBe("before");
 
-        writeFileSync(path, "after");
-        const second = await handle(new Request("http://x/file.txt"));
-        expect(await second.text()).toBe("after");
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+      writeFileSync(path, "after");
+      const second = await handle(new Request("http://x/file.txt"));
+      expect(await second.text()).toBe("after");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("watch: an edit is not visible until the watcher invalidates the cache", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rescache-fresh-watch-"));
+    try {
+      const path = join(root, "file.txt");
+      writeFileSync(path, "before");
+      const handle = createHandler(makeOpts(root, { watch: true }));
+
+      const first = await handle(new Request("http://x/file.txt"));
+      expect(await first.text()).toBe("before");
+      const etagBefore = first.headers.get("ETag");
+
+      writeFileSync(path, "after");
+
+      // A cached hit is trusted outright in watch mode: resolveCached
+      // returns the frozen ResolvedFile from the first request without
+      // re-stat'ing, so the ETag (built from its cached size/mtimeMs)
+      // doesn't move -- without the invalidation the fs watcher normally
+      // triggers, this documents that contract. The body itself isn't a
+      // reliable signal here: it's served from a plain Bun.BunFile, which
+      // always reads whatever is currently on disk regardless of the
+      // resolution cache, so it reflects the edit either way.
+      const stillCached = await handle(new Request("http://x/file.txt"));
+      expect(stillCached.headers.get("ETag")).toBe(etagBefore);
+
+      // startServer's fs watcher calls this on every change; simulate it.
+      handle.invalidateResolutionCache();
+      const afterInvalidate = await handle(new Request("http://x/file.txt"));
+      expect(afterInvalidate.headers.get("ETag")).not.toBe(etagBefore);
+      expect(await afterInvalidate.text()).toBe("after");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

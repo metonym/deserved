@@ -444,6 +444,8 @@ function joinUrl(base: string, name: string): string {
   return `${base.replace(/\/+$/, "")}/${name}`;
 }
 
+type NotFoundCache = { size: number; mtimeMs: number; html: string };
+
 type HandlerContext = {
   opts: Options;
   hub: Hub | undefined;
@@ -451,6 +453,7 @@ type HandlerContext = {
   realRoot: string | null;
   resolveCached: (pathname: string) => ResolvedFile | null;
   getCompressed: GetCompressed;
+  notFound: NotFoundCache | null;
 };
 
 export function createHandler(opts: Options, hub?: Hub): Handler {
@@ -465,6 +468,7 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
     realRoot,
     resolveCached: resolution.resolveCached,
     getCompressed: compression.getCompressed,
+    notFound: null,
   };
 
   const handle = async function handle(req: Request): Promise<Response> {
@@ -492,7 +496,10 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
     }
   } as Handler;
 
-  handle.invalidateResolutionCache = resolution.invalidate;
+  handle.invalidateResolutionCache = () => {
+    resolution.invalidate();
+    ctx.notFound = null;
+  };
   handle.invalidateCompressedCache = compression.invalidate;
   handle.resolutionCacheSize = resolution.size;
   handle.compressedCacheBytes = compression.bytes;
@@ -531,15 +538,9 @@ async function handleDecoded(
   method: string,
   pathname: string,
   url: URL,
-  {
-    opts,
-    hub,
-    rootAbs,
-    realRoot,
-    resolveCached,
-    getCompressed,
-  }: HandlerContext,
+  ctx: HandlerContext,
 ): Promise<Response> {
+  const { opts, hub, rootAbs, realRoot, resolveCached, getCompressed } = ctx;
   const send = (res: Response) => finish(method, pathname, opts, res);
 
   if (method !== "GET" && method !== "HEAD") {
@@ -606,7 +607,23 @@ async function handleDecoded(
     const notFoundPage = resolveCached("/404.html");
     if (notFoundPage) {
       // Error pages are small; skip compression to keep this path simple.
-      const html = await notFoundPage.file.text();
+      // resolveCached above always re-stats the winner, so the cache below
+      // only needs to compare against that fresh (size, mtimeMs).
+      const cached = ctx.notFound;
+      const html =
+        cached &&
+        cached.size === notFoundPage.size &&
+        cached.mtimeMs === notFoundPage.mtimeMs
+          ? cached.html
+          : await (async () => {
+              const text = await notFoundPage.file.text();
+              ctx.notFound = {
+                size: notFoundPage.size,
+                mtimeMs: notFoundPage.mtimeMs,
+                html: text,
+              };
+              return text;
+            })();
       return send(htmlPage(html, opts, 404));
     }
   }

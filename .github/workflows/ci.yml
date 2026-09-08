@@ -37,7 +37,7 @@ jobs:
 
   bench:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
     continue-on-error: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -47,4 +47,6 @@ jobs:
         run: bun ci
 
       - name: Run micro-benchmarks
-        run: bun run bench:micro
+        # Shared runners are noisy enough that ostia's sampling loop can run
+        # well past its local runtime; cap it so a slow run can't eat the job.
+        run: timeout 90s bun run bench:micro || true

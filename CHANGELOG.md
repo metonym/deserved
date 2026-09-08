@@ -1,10 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-09-08
+
+**Features**
+
+- Publish TypeScript declaration files with the package. (`#24`)
 
 **Performance**
 
-- With `--watch`, trust the cached stat until the watcher invalidates it instead of re-stat'ing on every request; non-watch mode still re-stats so edits are visible immediately.
+- Gzip via Bun 1.4's native `CompressionStream` (drops the `node:zlib` fallback). (`#27`)
+- Cut redundant allocations on the request hot path (`safeJoin`, `notModified`, `isCompressible`, SPA checks).
+- Keep compressed-cache entries as `Blob` so `Response` skips copying the body buffer.
+- Batch request-log writes and skip sanitization when the path is clean.
+- Cache the `404.html` body by `(size, mtime)` instead of re-reading on every HTML 404.
+- Cache directory resolution alongside file resolution (browser 404s / listings).
+- Evict resolution-cache entries LRU instead of clearing the whole map past capacity.
+- Build response headers as plain objects; memoize `Last-Modified` for an unchanged mtime.
+- With `--watch`, trust the cached stat until the watcher invalidates it; non-watch mode still re-stats so edits are visible immediately.
 
 ## 0.4.0 — 2026-07-30
 

@@ -193,10 +193,23 @@ function statFile(
   return null;
 }
 
-// Cap on distinct pathnames tracked per handler; cleared wholesale past
-// this rather than evicted LRU-style -- simpler, and a dev server only
-// ever probes as many distinct paths as a human clicks through.
+// Cap on distinct pathnames tracked per handler (file and dir maps each).
+// Evicted LRU-style past this limit -- Map iteration order is insertion
+// order, and every reused hit re-inserts its key, so the front of the map
+// is always the least-recently-used entry, the same trick
+// createCompressionCache.touch uses.
 export const RESOLUTION_CACHE_LIMIT = 4096;
+
+function evictOldest<T>(map: Map<string, T>, limit: number): void {
+  if (map.size < limit) return;
+  const oldestKey = map.keys().next().value;
+  if (oldestKey !== undefined) map.delete(oldestKey);
+}
+
+function markRecent<T>(map: Map<string, T>, key: string, entry: T): void {
+  map.delete(key);
+  map.set(key, entry);
+}
 
 // Bounds staleness in non-watch mode: a newly created or deleted candidate
 // (e.g. adding about.html for a pathname previously cached as a 404)
@@ -229,14 +242,20 @@ function createResolutionCache(
   function resolveCached(pathname: string): ResolvedFile | null {
     const cached = cache.get(pathname);
     if (cached && (watch || Date.now() - cached.at < RESOLUTION_TTL_MS)) {
-      if (cached.value === null) return null;
+      if (cached.value === null) {
+        markRecent(cache, pathname, cached);
+        return null;
+      }
       const hit = statFile(cached.value.real, cached.value.kind);
-      if (hit) return hit;
+      if (hit) {
+        markRecent(cache, pathname, cached);
+        return hit;
+      }
       // Cached winner disappeared or changed kind -- re-probe below.
     }
 
     const resolved = resolveFileWithRoot(rootAbs, realRoot, pathname);
-    if (cache.size >= RESOLUTION_CACHE_LIMIT) cache.clear();
+    evictOldest(cache, RESOLUTION_CACHE_LIMIT);
     cache.set(pathname, {
       value: resolved ? { real: resolved.path, kind: resolved.kind } : null,
       at: Date.now(),
@@ -247,15 +266,21 @@ function createResolutionCache(
   function resolveDirCached(pathname: string): string | null {
     const cached = dirs.get(pathname);
     if (cached && (watch || Date.now() - cached.at < RESOLUTION_TTL_MS)) {
-      if (cached.value === null) return null;
+      if (cached.value === null) {
+        markRecent(dirs, pathname, cached);
+        return null;
+      }
       try {
-        if (statSync(cached.value).isDirectory()) return cached.value;
+        if (statSync(cached.value).isDirectory()) {
+          markRecent(dirs, pathname, cached);
+          return cached.value;
+        }
       } catch {}
       // Cached winner disappeared or changed kind -- re-probe below.
     }
 
     const resolved = resolveDirWithRoot(rootAbs, realRoot, pathname);
-    if (dirs.size >= RESOLUTION_CACHE_LIMIT) dirs.clear();
+    evictOldest(dirs, RESOLUTION_CACHE_LIMIT);
     dirs.set(pathname, { value: resolved, at: Date.now() });
     return resolved;
   }

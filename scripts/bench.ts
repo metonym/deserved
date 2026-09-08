@@ -50,10 +50,13 @@ const RSS_SAMPLE_INTERVAL_MS = 150;
 
 type Scenario = {
   name: string;
-  path: string;
+  /** A function receives a shared, monotonically increasing per-request counter. */
+  path: string | ((i: number) => string);
   headers?: Record<string, string>;
+  method?: "GET" | "HEAD";
   /** Extra CLI flags for the server this scenario runs against. Default: ["-q"]. */
   server?: string[];
+  concurrency?: number;
 };
 
 type ScenarioResult = {
@@ -191,6 +194,29 @@ function parseCliArgs(argv: string[]): {
   return { filter, duration, runs, save, compare };
 }
 
+/** count small (empty) files at dir/<prefix><i>.txt, for directory-listing scenarios. */
+function buildManyFiles(dir: string, count: number, prefix: string): void {
+  mkdirSync(dir, { recursive: true });
+  for (let i = 0; i < count; i++) {
+    writeFileSync(join(dir, `${prefix}${i}.txt`), "");
+  }
+}
+
+/**
+ * `count` files of `sizeEach` random (incompressible) bytes, filled from one
+ * shared buffer with a per-file 4-byte header so files differ -- generating
+ * `count` independent random buffers would dominate fixture build time.
+ */
+function buildChurnFiles(dir: string, count: number, sizeEach: number): void {
+  mkdirSync(dir, { recursive: true });
+  const base = randomBytes(sizeEach);
+  for (let i = 0; i < count; i++) {
+    const buf = base.slice();
+    new DataView(buf.buffer).setUint32(0, i, true);
+    writeFileSync(join(dir, `c-${String(i).padStart(3, "0")}.js`), buf);
+  }
+}
+
 function buildFixture(): { dir: string; jsCompressedBytes: number } {
   const dir = mkdtempSync(join(tmpdir(), "deserved-bench-"));
   const html = fakeHtml(24_000, "bench");
@@ -205,8 +231,18 @@ function buildFixture(): { dir: string; jsCompressedBytes: number } {
   writeFileSync(join(dir, "app.js"), js);
   writeFileSync(join(dir, "style.css"), css);
   writeFileSync(join(dir, "img.bin"), randomBytes(500_000));
+  writeFileSync(join(dir, "404.html"), fakeHtml(3_000, "not found"));
+  writeFileSync(join(dir, "video.bin"), randomBytes(20_000_000));
   mkdirSync(join(dir, "docs/guide"), { recursive: true });
   writeFileSync(join(dir, "docs/guide/index.html"), fakeHtml(800, "guide"));
+  buildManyFiles(join(dir, "docs/list"), 40, "f-");
+  buildManyFiles(join(dir, "docs/biglist"), 1000, "f-");
+  // 200 * 400 KB, incompressible on purpose: past the 64 MB compressed
+  // cache budget, so compress-churn forces eviction under load.
+  buildChurnFiles(join(dir, "churn"), 200, 400_000);
+  // assets/a-0000.js .. a-5999.js are deliberately never created: resolve-churn
+  // requests them to exercise the resolution cache past its 4096-entry limit.
+
   return { dir, jsCompressedBytes: jsCompressed };
 }
 
@@ -319,13 +355,70 @@ function buildScenarios(): Scenario[] {
     { name: "html-root", path: "/" },
     { name: "js-50k", path: "/app.js", headers: { "Accept-Encoding": "zstd" } },
     {
+      name: "js-50k-gzip",
+      path: "/app.js",
+      headers: { "Accept-Encoding": "gzip" },
+    },
+    {
       name: "js-50k-identity",
       path: "/app.js",
       headers: { "Accept-Encoding": "identity" },
     },
+    {
+      name: "css-10k",
+      path: "/style.css",
+      headers: { "Accept-Encoding": "zstd" },
+    },
     { name: "bin-500k", path: "/img.bin" },
+    { name: "head-js", path: "/app.js", method: "HEAD" },
+    {
+      name: "range-64k",
+      path: "/video.bin",
+      headers: { Range: "bytes=0-65535" },
+    },
+    { name: "big-20m", path: "/video.bin", concurrency: 4 },
     { name: "nested-index", path: "/docs/guide/" },
-    { name: "miss-404", path: "/nope" },
+    { name: "dir-40", path: "/docs/list/" },
+    { name: "dir-1000", path: "/docs/biglist/" },
+    {
+      name: "miss-404-html",
+      path: "/nope",
+      headers: { Accept: "text/html" },
+    },
+    { name: "miss-404-browser", path: "/nope" },
+    {
+      name: "miss-404-asset",
+      path: "/nope.png",
+      headers: { Accept: "image/png" },
+    },
+    {
+      name: "spa-fallback",
+      path: "/dashboard/settings",
+      headers: { Accept: "text/html", "Accept-Encoding": "zstd" },
+      server: ["-q", "--spa"],
+    },
+    {
+      name: "cors-js",
+      path: "/app.js",
+      headers: { "Accept-Encoding": "zstd" },
+      server: ["-q", "--cors"],
+    },
+    {
+      name: "compress-churn",
+      path: (i) => `/churn/c-${String(i % 200).padStart(3, "0")}.js`,
+      headers: { "Accept-Encoding": "zstd" },
+    },
+    {
+      name: "resolve-churn",
+      path: (i) => `/assets/a-${String(i % 6000).padStart(4, "0")}.js`,
+      headers: { Accept: "image/png" },
+    },
+    {
+      name: "js-50k-watch",
+      path: "/app.js",
+      headers: { "Accept-Encoding": "zstd" },
+      server: ["-q", "--watch"],
+    },
     { name: "etag-304", path: "/app.js" },
     { name: "html-root-logging", path: "/", server: [] },
   ];
@@ -364,26 +457,46 @@ function percentile(sortedAsc: number[], p: number): number {
   return sortedAsc[idx] ?? 0;
 }
 
+/** Mutable per-scenario request counter, shared by warmup and every measured run. */
+type Counter = { value: number };
+
+function scenarioPath(scenario: Scenario, counter: Counter): string {
+  return typeof scenario.path === "function"
+    ? scenario.path(counter.value++)
+    : scenario.path;
+}
+
+function makeFire(
+  base: string,
+  scenario: Scenario,
+  counter: Counter,
+): () => Promise<number> {
+  const method = scenario.method ?? "GET";
+  return async () => {
+    const url = base + scenarioPath(scenario, counter);
+    const t0 = performance.now();
+    const res = await fetch(url, { method, headers: scenario.headers });
+    await res.arrayBuffer();
+    return performance.now() - t0;
+  };
+}
+
 async function measureOnce(
   base: string,
   scenario: Scenario,
   durationS: number,
   serverPid: number,
+  counter: Counter,
 ): Promise<ScenarioResult> {
-  const url = base + scenario.path;
-  const fire = async () => {
-    const t0 = performance.now();
-    const res = await fetch(url, { headers: scenario.headers });
-    await res.arrayBuffer();
-    return performance.now() - t0;
-  };
+  const concurrency = scenario.concurrency ?? CONCURRENCY;
+  const fire = makeFire(base, scenario, counter);
 
   const rssBeforeKb = await sampleRssKb(serverPid);
   const cpuBefore = await cpuSeconds(serverPid);
   const sampler = new RssSampler(serverPid, RSS_SAMPLE_INTERVAL_MS);
   sampler.start();
   const { latencies, errors, actualSeconds } = await measure(
-    CONCURRENCY,
+    concurrency,
     durationS,
     fire,
   );
@@ -425,19 +538,15 @@ async function runScenario(
   serverPid: number,
   runs: number,
 ): Promise<ScenarioResult> {
-  const url = base + scenario.path;
-  const fire = async () => {
-    const t0 = performance.now();
-    const res = await fetch(url, { headers: scenario.headers });
-    await res.arrayBuffer();
-    return performance.now() - t0;
-  };
-
-  await measure(CONCURRENCY, WARMUP_S, fire);
+  const counter: Counter = { value: 0 };
+  const concurrency = scenario.concurrency ?? CONCURRENCY;
+  await measure(concurrency, WARMUP_S, makeFire(base, scenario, counter));
 
   const attempts: ScenarioResult[] = [];
   for (let i = 0; i < runs; i++) {
-    attempts.push(await measureOnce(base, scenario, durationS, serverPid));
+    attempts.push(
+      await measureOnce(base, scenario, durationS, serverPid, counter),
+    );
   }
   return medianByReqPerSec(attempts);
 }
@@ -591,6 +700,31 @@ function loadCompareBaseline(path: string): Map<string, ScenarioResult> {
   return new Map(parsed.results.map((r) => [r.name, r]));
 }
 
+const STARTUP_RUNS = 10;
+
+/** Wall-clock ms from spawn to the bound URL appearing on stdout. */
+async function measureStartupMs(fixtureDir: string): Promise<number> {
+  const t0 = performance.now();
+  const server = await startQuietServer(fixtureDir, ["-q"]);
+  const elapsed = performance.now() - t0;
+  await server.stop();
+  return elapsed;
+}
+
+async function measureStartup(
+  fixtureDir: string,
+): Promise<{ median: number; max: number }> {
+  const samples: number[] = [];
+  for (let i = 0; i < STARTUP_RUNS; i++) {
+    samples.push(await measureStartupMs(fixtureDir));
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    median: sorted[Math.floor(sorted.length / 2)] ?? 0,
+    max: Math.max(...sorted),
+  };
+}
+
 async function main() {
   const { filter, duration, runs, save, compare } = parseCliArgs(
     process.argv.slice(2),
@@ -604,6 +738,13 @@ async function main() {
   if (scenarios.length === 0) {
     console.error(`No scenarios match --filter "${filter}"`);
     process.exit(1);
+  }
+
+  if (!filter) {
+    const startup = await measureStartup(fixtureDir);
+    console.log(
+      `startup (${STARTUP_RUNS} runs): median ${startup.median.toFixed(0)} ms, max ${startup.max.toFixed(0)} ms`,
+    );
   }
 
   const compareBaseline = compare ? loadCompareBaseline(compare) : null;

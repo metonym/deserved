@@ -215,12 +215,16 @@ type CachedResolution = { real: string; kind: ResolvedFile["kind"] } | null;
 // the cached candidate no longer stats as a file (deleted, replaced by a
 // dir, symlink now escapes root), resolution falls through and re-probes
 // for real instead of trusting the stale entry.
+//
+// The directory-resolution side (resolveDirCached) mirrors this exactly,
+// just re-confirming isDirectory() instead of isFile() on a fresh hit.
 function createResolutionCache(
   rootAbs: string,
   realRoot: string | null,
   watch: boolean,
 ) {
   const cache = new Map<string, { value: CachedResolution; at: number }>();
+  const dirs = new Map<string, { value: string | null; at: number }>();
 
   function resolveCached(pathname: string): ResolvedFile | null {
     const cached = cache.get(pathname);
@@ -240,9 +244,29 @@ function createResolutionCache(
     return resolved;
   }
 
+  function resolveDirCached(pathname: string): string | null {
+    const cached = dirs.get(pathname);
+    if (cached && (watch || Date.now() - cached.at < RESOLUTION_TTL_MS)) {
+      if (cached.value === null) return null;
+      try {
+        if (statSync(cached.value).isDirectory()) return cached.value;
+      } catch {}
+      // Cached winner disappeared or changed kind -- re-probe below.
+    }
+
+    const resolved = resolveDirWithRoot(rootAbs, realRoot, pathname);
+    if (dirs.size >= RESOLUTION_CACHE_LIMIT) dirs.clear();
+    dirs.set(pathname, { value: resolved, at: Date.now() });
+    return resolved;
+  }
+
   return {
     resolveCached,
-    invalidate: () => cache.clear(),
+    resolveDirCached,
+    invalidate: () => {
+      cache.clear();
+      dirs.clear();
+    },
     size: () => cache.size,
   };
 }
@@ -449,9 +473,8 @@ type NotFoundCache = { size: number; mtimeMs: number; html: string };
 type HandlerContext = {
   opts: Options;
   hub: Hub | undefined;
-  rootAbs: string;
-  realRoot: string | null;
   resolveCached: (pathname: string) => ResolvedFile | null;
+  resolveDirCached: (pathname: string) => string | null;
   getCompressed: GetCompressed;
   notFound: NotFoundCache | null;
 };
@@ -464,9 +487,8 @@ export function createHandler(opts: Options, hub?: Hub): Handler {
   const ctx: HandlerContext = {
     opts,
     hub,
-    rootAbs,
-    realRoot,
     resolveCached: resolution.resolveCached,
+    resolveDirCached: resolution.resolveDirCached,
     getCompressed: compression.getCompressed,
     notFound: null,
   };
@@ -540,7 +562,7 @@ async function handleDecoded(
   url: URL,
   ctx: HandlerContext,
 ): Promise<Response> {
-  const { opts, hub, rootAbs, realRoot, resolveCached, getCompressed } = ctx;
+  const { opts, hub, resolveCached, resolveDirCached, getCompressed } = ctx;
   const send = (res: Response) => finish(method, pathname, opts, res);
 
   if (method !== "GET" && method !== "HEAD") {
@@ -595,7 +617,7 @@ async function handleDecoded(
   }
 
   if (opts.dir) {
-    const dir = resolveDirWithRoot(rootAbs, realRoot, pathname);
+    const dir = resolveDirCached(pathname);
     if (dir) {
       if (!pathname.endsWith("/")) return send(directoryRedirect(url));
       const html = directoryListing(pathname, listDir(dir));

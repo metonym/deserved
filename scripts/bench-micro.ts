@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * mitata micro-benchmarks for deserved's hot in-process functions.
+ * ostia micro-benchmarks for deserved's hot in-process functions.
  *
  * Complements scripts/bench.ts (which drives the real CLI over HTTP to
  * measure end-to-end req/s and RSS) by isolating the pure request-handling
@@ -10,7 +10,7 @@
  *
  * Usage: bun bench:micro [--filter <regex>]
  *
- * mitata prints ANSI-colored output to stdout; redirect and strip color
+ * ostia prints ANSI-colored output to stdout; redirect and strip color
  * codes to save it to a file:
  *   bun bench:micro | sed 's/\x1b\[[0-9;]*m//g' > file.txt
  */
@@ -23,7 +23,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bench, do_not_optimize, group, run, summary } from "mitata";
+import { group, keep, run, task } from "ostia";
 import {
   acceptsHtml,
   baseHeaders,
@@ -139,108 +139,88 @@ const watchHandler = createHandler({
 await watchHandler(getReq());
 
 group("request handling", () => {
-  summary(() => {
-    bench("handle: cache hit (compressed)", () => handler(getReq()));
-    bench("handle: cache hit (compressed, watch)", () =>
-      watchHandler(getReq()),
-    );
-    bench("handle: cache hit (identity)", () => handler(identityReq()));
-    bench("handle: cache hit (HEAD)", () => handler(headReq()));
-    bench("handle: range 206", () => handler(rangeReq()));
-    bench("handle: 304 not-modified", () => handler(etagReq(warmEtag)));
-    bench("handle: 404 miss", () => handler(missReq()));
-    bench("handle: spa fallback", () => spaHandler(spaReq()));
-    bench("handle: 404 cold miss", () => handler(coldMissReq())).gc("inner");
-    bench("handle: 404 with 404.html (HTML client)", () =>
-      handler(notFoundHtmlReq()),
-    ).gc("inner");
-    bench("handle: dir listing 40", () => handler(dirReq())).gc("inner");
-    bench("handle: cache hit + cors", () => corsHandler(getReq()));
-    // Prints a log line per call -- run last, or pass --filter to skip the
-    // spam (mitata prints its table after every group finishes).
-    bench("handle: cache hit, logging", () => loggingHandler(getReq()));
-  });
+  task("handle: cache hit (compressed)", () => handler(getReq()));
+  task("handle: cache hit (compressed, watch)", () => watchHandler(getReq()));
+  task("handle: cache hit (identity)", () => handler(identityReq()));
+  task("handle: cache hit (HEAD)", () => handler(headReq()));
+  task("handle: range 206", () => handler(rangeReq()));
+  task("handle: 304 not-modified", () => handler(etagReq(warmEtag)));
+  task("handle: 404 miss", () => handler(missReq()));
+  task("handle: spa fallback", () => spaHandler(spaReq()));
+  task("handle: 404 cold miss", () => handler(coldMissReq()), { gc: true });
+  task(
+    "handle: 404 with 404.html (HTML client)",
+    () => handler(notFoundHtmlReq()),
+    { gc: true },
+  );
+  task("handle: dir listing 40", () => handler(dirReq()), { gc: true });
+  task("handle: cache hit + cors", () => corsHandler(getReq()));
+  // Prints a log line per call -- run last, or pass --filter to skip the
+  // spam (ostia prints its table after every group finishes).
+  task("handle: cache hit, logging", () => loggingHandler(getReq()));
 });
 
 group("path resolution", () => {
-  summary(() => {
-    bench("buildCandidates: bare path", () =>
-      do_not_optimize(buildCandidates("docs/guide")),
-    );
-    bench("buildCandidates: trailing slash", () =>
-      do_not_optimize(buildCandidates("docs/guide/")),
-    );
-    bench("safeJoin: contained", () =>
-      do_not_optimize(safeJoin(root, "docs/page-1.html")),
-    );
-    bench("safeJoin: traversal attempt", () =>
-      do_not_optimize(safeJoin(root, "../../etc/passwd")),
-    );
-    bench("resolveFileWithRoot: cold, 3 candidates", () =>
-      do_not_optimize(resolveFileWithRoot(root, realRoot, "/missing/path")),
-    ).gc("inner");
-    bench("resolveDirWithRoot", () =>
-      do_not_optimize(resolveDirWithRoot(root, realRoot, "/docs/")),
-    );
-  });
+  task("buildCandidates: bare path", () => keep(buildCandidates("docs/guide")));
+  task("buildCandidates: trailing slash", () =>
+    keep(buildCandidates("docs/guide/")),
+  );
+  task("safeJoin: contained", () => keep(safeJoin(root, "docs/page-1.html")));
+  task("safeJoin: traversal attempt", () =>
+    keep(safeJoin(root, "../../etc/passwd")),
+  );
+  task(
+    "resolveFileWithRoot: cold, 3 candidates",
+    () => keep(resolveFileWithRoot(root, realRoot, "/missing/path")),
+    { gc: true },
+  );
+  task("resolveDirWithRoot", () =>
+    keep(resolveDirWithRoot(root, realRoot, "/docs/")),
+  );
 });
 
 group("content negotiation", () => {
   const file = Bun.file(join(root, "app.js"));
   const req = getReq();
-  summary(() => {
-    bench("contentType", () => do_not_optimize(contentType(file, "app.js")));
-    bench("isCompressible", () =>
-      do_not_optimize(isCompressible("text/javascript")),
-    );
-    bench("pickEncoding", () => do_not_optimize(pickEncoding(req)));
-    bench("acceptsHtml", () => do_not_optimize(acceptsHtml(req)));
-  });
+  task("contentType", () => keep(contentType(file, "app.js")));
+  task("isCompressible", () => keep(isCompressible("text/javascript")));
+  task("pickEncoding", () => keep(pickEncoding(req)));
+  task("acceptsHtml", () => keep(acceptsHtml(req)));
 });
 
 group("caching", () => {
   const req = getReq();
   const etaggedReq = etagReq(warmEtag);
-  summary(() => {
-    bench("makeEtag", () =>
-      do_not_optimize(makeEtag(12_345, 1_700_000_000_000)),
-    );
-    bench("notModified", () =>
-      do_not_optimize(notModified(etaggedReq, warmEtag)),
-    );
-    bench("isNotModified", () =>
-      do_not_optimize(isNotModified(etaggedReq, warmEtag, 1_700_000_000_000)),
-    );
-    bench("ifRangeSatisfied", () =>
-      do_not_optimize(ifRangeSatisfied(req, warmEtag, 1_700_000_000_000)),
-    );
-    bench("shouldSpaFallback", () =>
-      do_not_optimize(shouldSpaFallback("/dashboard/settings")),
-    );
-    bench("parseRange: valid", () =>
-      do_not_optimize(parseRange("bytes=0-999", appJs.length)),
-    );
-    bench("parseRange: suffix", () =>
-      do_not_optimize(parseRange("bytes=-500", appJs.length)),
-    );
-    bench("baseHeaders", () =>
-      do_not_optimize(
-        baseHeaders(warmEtag, DEFAULT_OPTIONS, false, 1_700_000_000_000),
-      ),
-    );
-  });
+  task("makeEtag", () => keep(makeEtag(12_345, 1_700_000_000_000)));
+  task("notModified", () => keep(notModified(etaggedReq, warmEtag)));
+  task("isNotModified", () =>
+    keep(isNotModified(etaggedReq, warmEtag, 1_700_000_000_000)),
+  );
+  task("ifRangeSatisfied", () =>
+    keep(ifRangeSatisfied(req, warmEtag, 1_700_000_000_000)),
+  );
+  task("shouldSpaFallback", () =>
+    keep(shouldSpaFallback("/dashboard/settings")),
+  );
+  task("parseRange: valid", () =>
+    keep(parseRange("bytes=0-999", appJs.length)),
+  );
+  task("parseRange: suffix", () =>
+    keep(parseRange("bytes=-500", appJs.length)),
+  );
+  task("baseHeaders", () =>
+    keep(baseHeaders(warmEtag, DEFAULT_OPTIONS, false, 1_700_000_000_000)),
+  );
 });
 
 group("compression", () => {
   const encoder = new TextEncoder();
   const payload10k = encoder.encode(fakeJs(10_000, 42));
   const payload50k = encoder.encode(appJs);
-  summary(() => {
-    bench("zstd 10 KB", () => compress("zstd", payload10k)).gc("inner");
-    bench("zstd 50 KB", () => compress("zstd", payload50k)).gc("inner");
-    bench("gzip 10 KB", () => compress("gzip", payload10k)).gc("inner");
-    bench("gzip 50 KB", () => compress("gzip", payload50k)).gc("inner");
-  });
+  task("zstd 10 KB", () => compress("zstd", payload10k), { gc: true });
+  task("zstd 50 KB", () => compress("zstd", payload50k), { gc: true });
+  task("gzip 10 KB", () => compress("gzip", payload10k), { gc: true });
+  task("gzip 50 KB", () => compress("gzip", payload50k), { gc: true });
 });
 
 group("directory listing", () => {
@@ -248,38 +228,37 @@ group("directory listing", () => {
   const entries = listDir(dir);
   const dir1000 = join(root, "docs1000");
   const entries1000 = listDir(dir1000);
-  summary(() => {
-    bench("listDir", () => do_not_optimize(listDir(dir)));
-    bench("directoryListing render", () =>
-      do_not_optimize(directoryListing("/docs/", entries)),
-    );
-    bench("listDir 1000", () => do_not_optimize(listDir(dir1000))).gc("inner");
-    bench("directoryListing render 1000", () =>
-      do_not_optimize(directoryListing("/docs1000/", entries1000)),
-    ).gc("inner");
-  });
+  task("listDir", () => keep(listDir(dir)));
+  task("directoryListing render", () =>
+    keep(directoryListing("/docs/", entries)),
+  );
+  task("listDir 1000", () => keep(listDir(dir1000)), { gc: true });
+  task(
+    "directoryListing render 1000",
+    () => keep(directoryListing("/docs1000/", entries1000)),
+    { gc: true },
+  );
 });
 
 group("live reload", () => {
-  summary(() => {
-    bench("injectLiveReload", () =>
-      do_not_optimize(injectLiveReload(indexHtml)),
-    ).gc("inner");
-    bench("logRequest quiet", () => logRequest("GET", 200, "/app.js", true));
-    bench("logRequest console.log", () =>
-      logRequest("GET", 200, "/app.js", false),
-    );
+  task("injectLiveReload", () => keep(injectLiveReload(indexHtml)), {
+    gc: true,
   });
+  task("logRequest quiet", () => logRequest("GET", 200, "/app.js", true));
+  task("logRequest console.log", () =>
+    logRequest("GET", 200, "/app.js", false),
+  );
 });
 
-function parseFilter(argv: string[]): RegExp | undefined {
+function parseFilter(argv: string[]): string | undefined {
   const idx = argv.indexOf("--filter");
-  const pattern = idx === -1 ? undefined : argv[idx + 1];
-  return pattern ? new RegExp(pattern) : undefined;
+  return idx === -1 ? undefined : argv[idx + 1];
 }
 
-try {
-  await run({ filter: parseFilter(process.argv.slice(2)) });
-} finally {
-  rmSync(root, { recursive: true, force: true });
+if (import.meta.main) {
+  try {
+    await run({ filter: parseFilter(process.argv.slice(2)) });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }

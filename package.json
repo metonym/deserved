@@ -15,7 +15,7 @@
     "start": "bun src/cli.ts",
     "build": "bun scripts/build.ts",
     "bench": "bun scripts/bench.ts",
-    "bench:micro": "ostia bench scripts/bench-micro.ts",
+    "bench:micro": "bun scripts/bench-micro.ts",
     "typecheck": "tsc",
     "lint": "biome check .",
     "lint:fix": "biome check --write . --unsafe",
@@ -30,7 +30,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.12",
     "@types/bun": "^1.4.0",
-    "ostia": "^0.2.2",
+    "ostia": "^0.2.3",
     "typescript": "^7.0.2"
   }
 }

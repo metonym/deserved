@@ -8,7 +8,7 @@
  * function-level optimization. Establish a baseline before changing
  * src/handlers.ts, then re-run to compare.
  *
- * Usage: bun bench:micro [-- --filter <regex>]
+ * Usage: bun bench:micro [--filter <regex>]
  *
  * ostia prints ANSI-colored output to stdout; redirect and strip color
  * codes to save it to a file:
@@ -23,7 +23,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { group, keep, task } from "ostia";
+import { group, keep, run, task } from "ostia";
 import {
   acceptsHtml,
   baseHeaders,
@@ -49,7 +49,6 @@ import { DEFAULT_OPTIONS, injectLiveReload, logRequest } from "../src/server";
 import { assertRealistic, fakeHtml, fakeJs } from "./bench-fixture";
 
 const root = mkdtempSync(join(tmpdir(), "deserved-bench-micro-"));
-process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 const realRoot = realpathSync(root);
 const appJs = fakeJs(50_000);
 const indexHtml = fakeHtml(24_000, "bench");
@@ -250,3 +249,16 @@ group("live reload", () => {
     logRequest("GET", 200, "/app.js", false),
   );
 });
+
+function parseFilter(argv: string[]): string | undefined {
+  const idx = argv.indexOf("--filter");
+  return idx === -1 ? undefined : argv[idx + 1];
+}
+
+if (import.meta.main) {
+  try {
+    await run({ filter: parseFilter(process.argv.slice(2)) });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}

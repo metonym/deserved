@@ -152,6 +152,11 @@ describe("watch-mode compressed output cache", () => {
       writeFileSync(path, `<h1>${"y".repeat(2500)}</h1>`);
       const future = new Date(Date.now() + 5000);
       utimesSync(path, future, future);
+      // In watch mode a resolution-cache hit is trusted outright (no
+      // re-stat), so the compressed cache's (size, mtimeMs) key wouldn't
+      // otherwise see the change either. startServer's fs watcher calls
+      // this on every change; simulate it.
+      handle.invalidateResolutionCache();
 
       const second = await handle(req());
       const secondBytes = new Uint8Array(await second.arrayBuffer());

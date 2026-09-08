@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+**Performance**
+
+- With `--watch`, trust the cached stat until the watcher invalidates it instead of re-stat'ing on every request; non-watch mode still re-stats so edits are visible immediately.
+
 ## 0.4.0 — 2026-07-30
 
 **Features**

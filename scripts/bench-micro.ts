@@ -130,10 +130,20 @@ const spaHandler = createHandler({
   spa: true,
 });
 await spaHandler(getReq());
+const watchHandler = createHandler({
+  ...DEFAULT_OPTIONS,
+  root,
+  quiet: true,
+  watch: true,
+});
+await watchHandler(getReq());
 
 group("request handling", () => {
   summary(() => {
     bench("handle: cache hit (compressed)", () => handler(getReq()));
+    bench("handle: cache hit (compressed, watch)", () =>
+      watchHandler(getReq()),
+    );
     bench("handle: cache hit (identity)", () => handler(identityReq()));
     bench("handle: cache hit (HEAD)", () => handler(headReq()));
     bench("handle: range 206", () => handler(rangeReq()));

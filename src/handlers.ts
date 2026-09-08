@@ -216,21 +216,33 @@ function markRecent<T>(map: Map<string, T>, key: string, entry: T): void {
 // becomes visible within this window.
 export const RESOLUTION_TTL_MS = 500;
 
-type CachedResolution = { real: string; kind: ResolvedFile["kind"] } | null;
+type CachedResolution = ResolvedFile | null;
 
 // Remembers which candidate (if any) a pathname resolves to, so a repeat
 // request skips the safeJoin + realpath containment walk across up to 3
-// candidates -- the dominant cost of a 404 probe. Deliberately does NOT
-// cache size/mtime: a cache hit always re-stats the winning candidate, so
-// content edits are visible on the very next request regardless of TTL or
-// --watch. Only *which file wins* (or whether one exists at all) can go
-// stale, and that's bounded by watch invalidation or RESOLUTION_TTL_MS. If
-// the cached candidate no longer stats as a file (deleted, replaced by a
-// dir, symlink now escapes root), resolution falls through and re-probes
-// for real instead of trusting the stale entry.
+// candidates -- the dominant cost of a 404 probe.
 //
-// The directory-resolution side (resolveDirCached) mirrors this exactly,
-// just re-confirming isDirectory() instead of isFile() on a fresh hit.
+// Two freshness contracts, chosen by `watch`:
+// - Non-watch: a hit re-stats the winning candidate every time, so content
+//   edits are visible on the very next request. Only *which file wins* (or
+//   whether one exists at all) can go stale, bounded by RESOLUTION_TTL_MS.
+// - --watch: startServer's fs watcher already calls invalidateResolutionCache()
+//   on every change, clearing this map, so a hit within that window is
+//   already known-fresh -- re-stating it would only reconfirm what the
+//   watcher guarantees. A hit returns the cached ResolvedFile (including
+//   size/mtimeMs) directly, no statSync. This is the dominant cost on the
+//   handler hot path (~45%), so skipping it matters more here than the TTL
+//   does in non-watch mode. staleness is instead bounded by the watcher's
+//   event delivery (tens of ms), exactly as file existence already is.
+//
+// If the cached candidate no longer stats as a file (deleted, replaced by a
+// dir, symlink now escapes root), resolution falls through and re-probes
+// for real instead of trusting the stale entry -- this only applies to the
+// non-watch re-stat path; a watch-mode hit is trusted outright.
+//
+// The directory-resolution side (resolveDirCached) mirrors the non-watch
+// contract in both modes: it always re-confirms isDirectory() on a fresh
+// hit, since a stale directory listing is comparatively cheap to redo.
 function createResolutionCache(
   rootAbs: string,
   realRoot: string | null,
@@ -246,7 +258,11 @@ function createResolutionCache(
         markRecent(cache, pathname, cached);
         return null;
       }
-      const hit = statFile(cached.value.real, cached.value.kind);
+      if (watch) {
+        markRecent(cache, pathname, cached);
+        return cached.value;
+      }
+      const hit = statFile(cached.value.path, cached.value.kind);
       if (hit) {
         markRecent(cache, pathname, cached);
         return hit;
@@ -256,10 +272,7 @@ function createResolutionCache(
 
     const resolved = resolveFileWithRoot(rootAbs, realRoot, pathname);
     evictOldest(cache, RESOLUTION_CACHE_LIMIT);
-    cache.set(pathname, {
-      value: resolved ? { real: resolved.path, kind: resolved.kind } : null,
-      at: Date.now(),
-    });
+    cache.set(pathname, { value: resolved, at: Date.now() });
     return resolved;
   }
 

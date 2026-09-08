@@ -12,11 +12,23 @@
  *
  * Usage: bun bench [--filter <scenario>] [--duration <seconds>]
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { assertRealistic, fakeCss, fakeHtml, fakeJs, randomBytes } from "./bench-fixture";
+import {
+  assertRealistic,
+  fakeCss,
+  fakeHtml,
+  fakeJs,
+  randomBytes,
+} from "./bench-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "src/cli.ts");
@@ -31,6 +43,8 @@ type Scenario = {
   name: string;
   path: string;
   headers?: Record<string, string>;
+  /** Extra CLI flags for the server this scenario runs against. Default: ["-q"]. */
+  server?: string[];
 };
 
 type ScenarioResult = {
@@ -39,10 +53,12 @@ type ScenarioResult = {
   errors: number;
   seconds: number;
   reqPerSec: number;
+  cpuUsPerReq: number | null;
   p50: number;
   p99: number;
   rssBeforeKb: number | null;
   rssPeakKb: number | null;
+  server: string[];
 };
 
 /** Server RSS in KB via `ps` (macOS and Linux). Comparable on one machine only. */
@@ -60,6 +76,56 @@ async function sampleRssKb(pid: number): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Server CPU time (user + system) in seconds, via /proc on Linux or `ps` on
+ * macOS. req/s saturates once the harness and server share a CPU, but this
+ * tracks handler cost regardless of client-side contention.
+ */
+async function cpuSeconds(pid: number): Promise<number | null> {
+  const statPath = `/proc/${pid}/stat`;
+  if (existsSync(statPath)) {
+    try {
+      const text = await Bun.file(statPath).text();
+      const afterComm = text.slice(text.lastIndexOf(")") + 2);
+      const fields = afterComm.split(" ");
+      // Fields count from 1 at "pid"; afterComm starts at field 3 (state).
+      const utimeTicks = Number(fields[14 - 3]);
+      const stimeTicks = Number(fields[15 - 3]);
+      if (!Number.isFinite(utimeTicks) || !Number.isFinite(stimeTicks))
+        return null;
+      return (utimeTicks + stimeTicks) / 100;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const proc = Bun.spawn(["ps", "-o", "utime=,stime=", "-p", String(pid)], {
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const text = (await new Response(proc.stdout).text()).trim();
+    await proc.exited;
+    const [utime, stime] = text.split(/\s+/, 2);
+    const u = parseClockSeconds(utime);
+    const s = parseClockSeconds(stime);
+    return u === null || s === null ? null : u + s;
+  } catch {
+    return null;
+  }
+}
+
+/** Parses `ps`'s `mm:ss.cc` or `hh:mm:ss` time format into seconds. */
+function parseClockSeconds(value: string | undefined): number | null {
+  if (!value) return null;
+  const parts = value.split(":").map(Number);
+  if (parts.some((n) => !Number.isFinite(n))) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
 }
 
 /** Poll RSS during a scenario. Catches the peak under load, not only before/after. */
@@ -128,9 +194,13 @@ function buildFixture(): string {
 
 type RunningServer = { base: string; pid: number; stop: () => Promise<void> };
 
-async function startServer(fixtureDir: string): Promise<RunningServer> {
+/** Spawns the CLI in quiet mode and discovers its port by reading stdout. */
+async function startQuietServer(
+  fixtureDir: string,
+  flags: string[],
+): Promise<RunningServer> {
   const proc: Subprocess<"ignore", "pipe", "pipe"> = Bun.spawn(
-    ["bun", CLI, fixtureDir, "-q", "-p", "0"],
+    ["bun", CLI, fixtureDir, ...flags, "-p", "0"],
     { cwd: ROOT, stdout: "pipe", stderr: "pipe", stdin: "ignore" },
   );
 
@@ -165,11 +235,68 @@ async function startServer(fixtureDir: string): Promise<RunningServer> {
   throw new Error(`server did not report a bound URL: ${err}`);
 }
 
-async function buildScenarios(base: string): Promise<Scenario[]> {
-  const probe = await fetch(`${base}/app.js`);
-  await probe.arrayBuffer();
-  const etag = probe.headers.get("ETag") ?? "";
+async function allocateFreePort(): Promise<number> {
+  const srv = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+  const port = srv.port;
+  await srv.stop(true);
+  if (!port) throw new Error("could not allocate a free port");
+  return port;
+}
 
+/**
+ * Spawns the CLI in non-quiet mode. stdout carries the request log, which
+ * we don't need and don't want to pay for reading -- discard it to
+ * /dev/null and poll the pre-allocated port instead of parsing the banner.
+ */
+async function startLoggingServer(
+  fixtureDir: string,
+  flags: string[],
+): Promise<RunningServer> {
+  const port = await allocateFreePort();
+  const proc = Bun.spawn(
+    ["bun", CLI, fixtureDir, ...flags, "-p", String(port)],
+    {
+      cwd: ROOT,
+      stdout: Bun.file("/dev/null"),
+      stderr: "pipe",
+      stdin: "ignore",
+    },
+  );
+  const base = `http://localhost:${port}`;
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${base}/`);
+      await res.arrayBuffer();
+      return {
+        base,
+        pid: proc.pid,
+        stop: async () => {
+          proc.kill();
+          await proc.exited;
+        },
+      };
+    } catch {
+      await Bun.sleep(25);
+    }
+  }
+
+  proc.kill();
+  const err = await new Response(proc.stderr).text();
+  throw new Error(`server did not respond on port ${port}: ${err}`);
+}
+
+async function startServer(
+  fixtureDir: string,
+  flags: string[],
+): Promise<RunningServer> {
+  return flags.includes("-q") || flags.includes("--quiet")
+    ? startQuietServer(fixtureDir, flags)
+    : startLoggingServer(fixtureDir, flags);
+}
+
+function buildScenarios(): Scenario[] {
   return [
     { name: "html-root", path: "/" },
     { name: "js-50k", path: "/app.js", headers: { "Accept-Encoding": "zstd" } },
@@ -181,7 +308,8 @@ async function buildScenarios(base: string): Promise<Scenario[]> {
     { name: "bin-500k", path: "/img.bin" },
     { name: "nested-index", path: "/docs/guide/" },
     { name: "miss-404", path: "/nope" },
-    { name: "etag-304", path: "/app.js", headers: { "If-None-Match": etag } },
+    { name: "etag-304", path: "/app.js" },
+    { name: "html-root-logging", path: "/", server: [] },
   ];
 }
 
@@ -235,6 +363,7 @@ async function runScenario(
   await measure(CONCURRENCY, WARMUP_S, fire);
 
   const rssBeforeKb = await sampleRssKb(serverPid);
+  const cpuBefore = await cpuSeconds(serverPid);
   const sampler = new RssSampler(serverPid, RSS_SAMPLE_INTERVAL_MS);
   sampler.start();
   const { latencies, errors, actualSeconds } = await measure(
@@ -243,7 +372,13 @@ async function runScenario(
     fire,
   );
   const { maxKb: rssPeakKb } = await sampler.stop();
+  const cpuAfter = await cpuSeconds(serverPid);
   const sorted = [...latencies].sort((a, b) => a - b);
+
+  const cpuUsPerReq =
+    cpuBefore !== null && cpuAfter !== null && latencies.length > 0
+      ? ((cpuAfter - cpuBefore) * 1e6) / latencies.length
+      : null;
 
   return {
     name: scenario.name,
@@ -251,10 +386,12 @@ async function runScenario(
     errors,
     seconds: actualSeconds,
     reqPerSec: latencies.length / actualSeconds,
+    cpuUsPerReq,
     p50: percentile(sorted, 0.5),
     p99: percentile(sorted, 0.99),
     rssBeforeKb,
     rssPeakKb,
+    server: scenario.server ?? ["-q"],
   };
 }
 
@@ -268,10 +405,15 @@ function fmtMbDelta(beforeKb: number | null, peakKb: number | null): string {
   return `${deltaMb >= 0 ? "+" : ""}${deltaMb.toFixed(1)}`;
 }
 
+function fmtCpu(us: number | null): string {
+  return us === null ? "n/a" : us.toFixed(2);
+}
+
 function printTable(results: ScenarioResult[]) {
   const headers = [
     "scenario",
     "req/s",
+    "cpu µs/req",
     "p50 (ms)",
     "p99 (ms)",
     "requests",
@@ -282,6 +424,7 @@ function printTable(results: ScenarioResult[]) {
   const rows = results.map((r) => [
     r.name,
     r.reqPerSec.toFixed(0),
+    fmtCpu(r.cpuUsPerReq),
     r.p50.toFixed(2),
     r.p99.toFixed(2),
     String(r.requests),
@@ -302,33 +445,66 @@ function printTable(results: ScenarioResult[]) {
   for (const row of rows) console.log(formatRow(row));
 }
 
+/** Groups scenarios by their (JSON-stringified) server flags, in first-seen order. */
+function groupByServerFlags(scenarios: Scenario[]): Map<string, Scenario[]> {
+  const groups = new Map<string, Scenario[]>();
+  for (const s of scenarios) {
+    const key = JSON.stringify(s.server ?? ["-q"]);
+    const list = groups.get(key);
+    if (list) list.push(s);
+    else groups.set(key, [s]);
+  }
+  return groups;
+}
+
 async function main() {
   const { filter, duration } = parseCliArgs(process.argv.slice(2));
   const fixtureDir = buildFixture();
-  let server: RunningServer | undefined;
+
+  const scenarios = buildScenarios().filter(
+    (s) => !filter || s.name.includes(filter),
+  );
+
+  if (scenarios.length === 0) {
+    console.error(`No scenarios match --filter "${filter}"`);
+    process.exit(1);
+  }
+
+  const results: ScenarioResult[] = [];
+  let baselineRssKb: number | null = null;
+  let finalRssKb: number | null = null;
+  let usedNonQuiet = false;
 
   try {
-    server = await startServer(fixtureDir);
-    const scenarios = (await buildScenarios(server.base)).filter(
-      (s) => !filter || s.name.includes(filter),
-    );
+    for (const [key, group] of groupByServerFlags(scenarios)) {
+      const flags = JSON.parse(key) as string[];
+      if (!flags.includes("-q") && !flags.includes("--quiet"))
+        usedNonQuiet = true;
 
-    if (scenarios.length === 0) {
-      console.error(`No scenarios match --filter "${filter}"`);
-      process.exit(1);
+      const server = await startServer(fixtureDir, flags);
+      try {
+        if (baselineRssKb === null)
+          baselineRssKb = await sampleRssKb(server.pid);
+
+        for (const scenario of group) {
+          if (scenario.name === "etag-304" && !scenario.headers) {
+            const probe = await fetch(`${server.base}/app.js`);
+            await probe.arrayBuffer();
+            scenario.headers = {
+              "If-None-Match": probe.headers.get("ETag") ?? "",
+            };
+          }
+          console.log(`Running ${scenario.name}...`);
+          results.push(
+            await runScenario(server.base, scenario, duration, server.pid),
+          );
+        }
+
+        finalRssKb = await sampleRssKb(server.pid);
+      } finally {
+        await server.stop();
+      }
     }
-
-    const baselineRssKb = await sampleRssKb(server.pid);
-
-    const results: ScenarioResult[] = [];
-    for (const scenario of scenarios) {
-      console.log(`Running ${scenario.name}...`);
-      results.push(
-        await runScenario(server.base, scenario, duration, server.pid),
-      );
-    }
-
-    const finalRssKb = await sampleRssKb(server.pid);
 
     console.log();
     printTable(results);
@@ -336,11 +512,15 @@ async function main() {
     console.log(
       `rss baseline: ${fmtMb(baselineRssKb)} MB, final: ${fmtMb(finalRssKb)} MB, growth: ${fmtMbDelta(baselineRssKb, finalRssKb)} MB`,
     );
+    if (usedNonQuiet) {
+      console.log(
+        "note: non-quiet scenarios' stdout is discarded to /dev/null, so their cpu µs/req is a lower bound on real terminal logging cost.",
+      );
+    }
     console.log(
       `bench-json: ${JSON.stringify({ concurrency: CONCURRENCY, warmupS: WARMUP_S, durationS: duration, baselineRssKb, finalRssKb, results })}`,
     );
   } finally {
-    await server?.stop();
     rmSync(fixtureDir, { recursive: true, force: true });
   }
 }

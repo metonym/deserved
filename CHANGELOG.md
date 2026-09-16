@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 — 2026-09-15
+
+**Features**
+
+- Publish the npm package with provenance attestations. (`#36`)
+
 ## 0.5.0 — 2026-09-08
 
 **Features**

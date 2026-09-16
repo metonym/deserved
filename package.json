@@ -1,6 +1,6 @@
 {
   "name": "deserved",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A tiny Bun static file server: SPA, live reload, zero dependencies",
   "license": "MIT",
   "type": "module",

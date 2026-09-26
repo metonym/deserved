@@ -32,6 +32,29 @@ function expectCorsHeaders(res: Response) {
 }
 
 describe("cors", () => {
+  test("OPTIONS preflight: 204 with CORS headers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cors-options-"));
+    try {
+      const handle = createHandler(makeOpts(root, { cors: true }));
+      const res = await handle(new Request("http://x/", { method: "OPTIONS" }));
+      expect(res.status).toBe(204);
+      expectCorsHeaders(res);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("OPTIONS without --cors: 405", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cors-options-off-"));
+    try {
+      const handle = createHandler(makeOpts(root));
+      const res = await handle(new Request("http://x/", { method: "OPTIONS" }));
+      expect(res.status).toBe(405);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("GET on a file: 200 with all CORS headers and an intact body", async () => {
     const root = mkdtempSync(join(tmpdir(), "cors-get-"));
     try {

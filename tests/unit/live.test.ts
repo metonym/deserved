@@ -1,5 +1,12 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHandler } from "../../src/handlers";
 import {
+  createSseHub,
+  DEFAULT_OPTIONS,
+  EVENTS_PATH,
   flushLogs,
   injectLiveReload,
   LIVE_PATH,
@@ -35,6 +42,29 @@ describe("LIVE_SCRIPT", () => {
     expect(LIVE_SCRIPT).toContain(
       "e.onerror=()=>{e.close();setTimeout(()=>location.reload(),1000)}",
     );
+  });
+});
+
+describe("events endpoint", () => {
+  test("HEAD returns SSE headers without subscribing a client", async () => {
+    const root = mkdtempSync(join(tmpdir(), "live-head-"));
+    const hub = createSseHub();
+    const subscribe = mock(hub.subscribe);
+    try {
+      const handle = createHandler(
+        { ...DEFAULT_OPTIONS, root, watch: true, quiet: true },
+        { ...hub, subscribe },
+      );
+      const res = await handle(
+        new Request(`http://x${EVENTS_PATH}`, { method: "HEAD" }),
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+      expect(subscribe).not.toHaveBeenCalled();
+    } finally {
+      hub.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

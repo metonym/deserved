@@ -1,9 +1,3 @@
 export { createHandler } from "./handlers";
-export {
-  BindError,
-  DEFAULT_OPTIONS,
-  type Options,
-  RootError,
-  type ServerHandle,
-  serve,
-} from "./server";
+export { DEFAULT_OPTIONS, type Options } from "./options";
+export { BindError, RootError, type ServerHandle, serve } from "./server";

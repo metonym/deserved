@@ -1,13 +1,8 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
 import { version as VERSION } from "../package.json";
-import {
-  BindError,
-  DEFAULT_OPTIONS,
-  type Options,
-  RootError,
-  startServer,
-} from "./server";
+import { DEFAULT_OPTIONS, type Options } from "./options";
+import { BindError, RootError, startServer } from "./server";
 
 function printHelp() {
   console.log(`

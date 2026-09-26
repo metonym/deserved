@@ -5,15 +5,13 @@ import { join } from "node:path";
 import { createHandler } from "../../src/handlers";
 import {
   createSseHub,
-  DEFAULT_OPTIONS,
   EVENTS_PATH,
-  flushLogs,
   injectLiveReload,
   LIVE_PATH,
   LIVE_SCRIPT,
-  logRequest,
-  shouldColor,
-} from "../../src/server";
+} from "../../src/live";
+import { flushLogs, logRequest, shouldColor } from "../../src/log";
+import { DEFAULT_OPTIONS } from "../../src/options";
 
 describe("injectLiveReload", () => {
   test("injects before </body>", () => {

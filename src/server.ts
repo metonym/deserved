@@ -2,34 +2,9 @@ import { statSync, watch } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { relative, resolve } from "node:path";
 import { createHandler } from "./handlers";
-
-export type Options = {
-  root: string;
-  port: number;
-  host: string;
-  spa: boolean;
-  watch: boolean;
-  open: boolean;
-  cors: boolean;
-  dir: boolean;
-  cache: boolean;
-  compress: boolean;
-  quiet: boolean;
-};
-
-export const DEFAULT_OPTIONS = {
-  root: ".",
-  port: 3000,
-  host: "localhost",
-  spa: false,
-  watch: false,
-  open: false,
-  cors: false,
-  dir: true,
-  cache: false,
-  compress: true,
-  quiet: false,
-} satisfies Options;
+import { classifyBatch, createSseHub, isIgnoredWatchPath } from "./live";
+import { flushLogs, logBanner, logInfo, logReload } from "./log";
+import { DEFAULT_OPTIONS, type Options } from "./options";
 
 export type ServerHandle = {
   port: number;
@@ -66,179 +41,9 @@ function isAddrInUseError(err: unknown): boolean {
   return /EADDRINUSE|address already in use/i.test(message);
 }
 
-export const LIVE_PATH = "/__live.js";
-export const EVENTS_PATH = "/__events";
-
-// Once the stream drops (server stopped or restarting), the browser's
-// EventSource retries on its own; the first successful reconnect reloads
-// the page. If the server comes back without --watch, /__events 404s and
-// the source closes for good, so reload once to pick up the new server.
-// A source that never connected (a handler with no hub) stays put, so
-// it can't loop.
-export const LIVE_SCRIPT = `(()=>{let down=false;const e=new EventSource("${EVENTS_PATH}");e.onopen=()=>{if(down)location.reload()};e.onmessage=(m)=>{if(m.data==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=l.href.split("?")[0];l.href=h+"?t="+Date.now()}}else{location.reload()}};e.onerror=()=>{if(down&&e.readyState===2)location.reload();down=true}})()`;
-
-const INJECT = `<script src="${LIVE_PATH}"></script>`;
-
 export function formatUrl(host: string, port: number): string {
   const bracketed = host.includes(":") ? `[${host}]` : host;
   return `http://${bracketed}:${port}`;
-}
-
-export function injectLiveReload(html: string): string {
-  const idx = html.toLowerCase().lastIndexOf("</body>");
-  if (idx === -1) return html + INJECT;
-  return html.slice(0, idx) + INJECT + html.slice(idx);
-}
-
-export const SSE_HEADERS = {
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  Connection: "keep-alive",
-};
-
-export function createSseHub() {
-  const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
-  const encoder = new TextEncoder();
-  const PING = encoder.encode(": ping\n\n");
-
-  // Bun force-closes a connection after ~10s of no traffic, which would
-  // otherwise drop an idle browser tab's SSE stream and make it reload on
-  // reconnect. Keep it warm so it only ever closes on shutdown.
-  const heartbeat = setInterval(() => {
-    for (const c of clients) {
-      try {
-        c.enqueue(PING);
-      } catch {
-        clients.delete(c);
-      }
-    }
-  }, 8000);
-  heartbeat.unref();
-
-  function subscribe(): Response {
-    let controller: ReadableStreamDefaultController<Uint8Array>;
-
-    const stream = new ReadableStream<Uint8Array>({
-      start(c) {
-        controller = c;
-        clients.add(c);
-        // retry: how soon the browser reconnects after a restart.
-        c.enqueue(encoder.encode("retry: 500\n: connected\n\n"));
-      },
-      cancel() {
-        clients.delete(controller);
-      },
-    });
-
-    return new Response(stream, { headers: SSE_HEADERS });
-  }
-
-  function broadcast(data = "reload") {
-    const payload = encoder.encode(`data: ${data}\n\n`);
-    for (const c of clients) {
-      try {
-        c.enqueue(payload);
-      } catch {
-        clients.delete(c);
-      }
-    }
-  }
-
-  function close() {
-    clearInterval(heartbeat);
-    for (const c of clients) {
-      try {
-        c.close();
-      } catch {}
-    }
-    clients.clear();
-  }
-
-  return { subscribe, broadcast, close };
-}
-
-// Plain text when piped (CI logs, `| tee`) or when NO_COLOR is set
-// (https://no-color.org).
-export function shouldColor(
-  isTTY: boolean | undefined,
-  env: Record<string, string | undefined>,
-): boolean {
-  return isTTY === true && !env.NO_COLOR;
-}
-
-const useColor = shouldColor(process.stdout.isTTY, process.env);
-const ansi = (code: number) => (useColor ? `\x1b[${code}m` : "");
-
-const c = {
-  reset: ansi(0),
-  dim: ansi(2),
-  green: ansi(32),
-  yellow: ansi(33),
-  red: ansi(31),
-  cyan: ansi(36),
-  bold: ansi(1),
-} as const;
-
-// biome-ignore lint/suspicious/noControlCharactersInRegex: strip control chars from logs
-const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: cheap pre-check so the common clean-path case skips replace()
-const HAS_CONTROL = /[\x00-\x1f\x7f]/;
-
-function sanitizeForLog(s: string): string {
-  return HAS_CONTROL.test(s) ? s.replace(CONTROL_CHARS, "") : s;
-}
-
-const ICON_OK = `${c.green}✓${c.reset}`;
-const ICON_REDIRECT = `${c.yellow}○${c.reset}`;
-const ICON_ERR = `${c.red}✗${c.reset}`;
-const DIM = c.dim;
-const RESET = c.reset;
-
-// Collapses many synchronous per-request writes into one per tick: a
-// console.log/write per request costs a syscall each, which adds up under
-// load. Lines queue here and flush once, at the end of the current
-// microtask queue.
-let pendingLines: string[] = [];
-
-function scheduleFlush(): void {
-  if (pendingLines.length === 1) queueMicrotask(flushLogs);
-}
-
-export function flushLogs(): void {
-  if (pendingLines.length === 0) return;
-  const out = pendingLines.join("\n");
-  pendingLines = [];
-  process.stdout.write(`${out}\n`);
-}
-
-export function logRequest(
-  method: string,
-  status: number,
-  path: string,
-  quiet: boolean,
-) {
-  if (quiet) return;
-  const icon = status < 300 ? ICON_OK : status < 400 ? ICON_REDIRECT : ICON_ERR;
-  pendingLines.push(
-    `${icon} ${DIM}${method}${RESET} ${status} ${sanitizeForLog(path)}`,
-  );
-  scheduleFlush();
-}
-
-function logInfo(msg: string, quiet = false) {
-  if (quiet) return;
-  console.log(`${c.cyan}│${c.reset} ${msg}`);
-}
-
-export function isIgnoredWatchPath(filename: string): boolean {
-  return filename
-    .split(/[/\\]/)
-    .some((segment) => segment.startsWith(".") || segment === "node_modules");
-}
-
-export function classifyBatch(files: (string | null)[]): "css" | "reload" {
-  if (files.length === 0) return "reload";
-  return files.every((f) => f?.endsWith(".css")) ? "css" : "reload";
 }
 
 function lanAddress(): string | null {
@@ -249,31 +54,6 @@ function lanAddress(): string | null {
     }
   }
   return null;
-}
-
-function logBanner(
-  url: string,
-  root: string,
-  flags: string[],
-  networkUrl?: string,
-) {
-  console.log();
-  console.log(
-    `  ${c.bold}deserved${c.reset} ${c.dim}serving${c.reset} ${root}`,
-  );
-  console.log(`  ${c.green}->${c.reset}  ${c.cyan}${url}${c.reset}`);
-  if (networkUrl) {
-    console.log(`  ${c.green}->${c.reset}  ${c.cyan}${networkUrl}${c.reset}`);
-  }
-  if (flags.length) {
-    console.log(`  ${c.dim}${flags.join("  ")}${c.reset}`);
-  }
-  console.log();
-}
-
-function logReload(quiet: boolean, kind: "css" | "reload") {
-  if (quiet) return;
-  console.log(`${c.yellow}*${c.reset} ${kind}`);
 }
 
 function openCommand(url: string): string[] {

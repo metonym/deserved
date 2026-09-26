@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHandler } from "../../src/handlers";
-import type { Options } from "../../src/server";
+import type { Options } from "../../src/options";
 
 function makeOpts(root: string, overrides: Partial<Options> = {}): Options {
   return {

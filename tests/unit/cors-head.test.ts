@@ -106,7 +106,7 @@ describe("cors", () => {
 });
 
 describe("HEAD", () => {
-  test("HEAD on a cold compressible html file: 200, empty body, correct headers; a later GET still returns the full body", async () => {
+  test("HEAD on a cold compressible html file: 200, empty body, compressed headers; a later GET still returns the full body", async () => {
     const root = mkdtempSync(join(tmpdir(), "head-compress-"));
     try {
       const body = `<h1>${"x".repeat(2000)}</h1>`;
@@ -120,10 +120,10 @@ describe("HEAD", () => {
         }),
       );
       expect(headRes.status).toBe(200);
-      expect(headRes.headers.get("Content-Encoding")).toBeNull();
-      expect(headRes.headers.get("Content-Length")).toBe(
-        String(Buffer.byteLength(body)),
-      );
+      expect(headRes.headers.get("Content-Encoding")).toBe("gzip");
+      const headLength = Number(headRes.headers.get("Content-Length"));
+      expect(headLength).toBeGreaterThan(0);
+      expect(headLength).toBeLessThan(Buffer.byteLength(body));
       expect(headRes.headers.get("ETag")).toBeTruthy();
       const headBytes = await headRes.arrayBuffer();
       expect(headBytes.byteLength).toBe(0);
@@ -135,6 +135,7 @@ describe("HEAD", () => {
       );
       expect(getRes.status).toBe(200);
       expect(getRes.headers.get("Content-Encoding")).toBe("gzip");
+      expect(getRes.headers.get("Content-Length")).toBe(String(headLength));
       const decoded = new TextDecoder().decode(
         Bun.gunzipSync(new Uint8Array(await getRes.arrayBuffer())),
       );
@@ -163,6 +164,50 @@ describe("HEAD", () => {
       expect(headRes.status).toBe(304);
       const bytes = await headRes.arrayBuffer();
       expect(bytes.byteLength).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("HEAD matches GET", () => {
+  async function both(opts: Options, path: string, headers = {}) {
+    const handle = createHandler(opts);
+    const get = await handle(new Request(`http://x${path}`, { headers }));
+    const head = await handle(
+      new Request(`http://x${path}`, { method: "HEAD", headers }),
+    );
+    return { get, head, body: await get.arrayBuffer() };
+  }
+
+  test("compressed file: same Content-Encoding and Content-Length", async () => {
+    const root = mkdtempSync(join(tmpdir(), "head-gzip-"));
+    try {
+      writeFileSync(join(root, "app.js"), "console.log(1);\n".repeat(200));
+      const { get, head, body } = await both(
+        makeOpts(root, { compress: true }),
+        "/app.js",
+        { "Accept-Encoding": "gzip" },
+      );
+      expect(head.headers.get("Content-Encoding")).toBe("gzip");
+      expect(head.headers.get("Content-Length")).toBe(
+        get.headers.get("Content-Length"),
+      );
+      expect(head.headers.get("Content-Length")).toBe(String(body.byteLength));
+      expect(await head.text()).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("--watch HTML: Content-Length includes the injected script", async () => {
+    const root = mkdtempSync(join(tmpdir(), "head-live-"));
+    try {
+      writeFileSync(join(root, "index.html"), "<body>hi</body>");
+      const { head, body } = await both(makeOpts(root, { watch: true }), "/");
+      expect(head.headers.get("Content-Encoding")).toBeNull();
+      expect(head.headers.get("Content-Length")).toBe(String(body.byteLength));
+      expect(await head.text()).toBe("");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

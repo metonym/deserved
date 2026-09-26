@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  mkdirSync,
   mkdtempSync,
   rmSync,
   symlinkSync,
@@ -414,5 +415,55 @@ describe("compressed cache: instance isolation", () => {
       rmSync(rootA, { recursive: true, force: true });
       rmSync(rootB, { recursive: true, force: true });
     }
+  });
+});
+
+describe("dotfiles", () => {
+  const root = mkdtempSync(join(tmpdir(), "hardening-dotfiles-"));
+  writeFileSync(join(root, ".env"), "SECRET=1");
+  mkdirSync(join(root, ".git"));
+  writeFileSync(join(root, ".git", "config"), "[core]");
+  mkdirSync(join(root, "sub"));
+  writeFileSync(join(root, "sub", ".hidden"), "hidden");
+  mkdirSync(join(root, ".well-known"));
+  writeFileSync(join(root, ".well-known", "security.txt"), "Contact: x");
+  writeFileSync(join(root, ".well-known", ".secret"), "secret");
+  writeFileSync(join(root, "404.html"), "<p>missing</p>");
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const handle = createHandler(makeOpts(root, { dir: true }));
+
+  for (const path of [
+    "/.env",
+    "/.git/config",
+    "/.git/",
+    "/sub/.hidden",
+    "/.well-known/.secret",
+    "/%2eenv",
+  ]) {
+    test(`GET ${path} returns 404`, async () => {
+      const res = await handle(
+        new Request(`http://x${path}`, { headers: { Accept: "text/plain" } }),
+      );
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe("Not Found");
+    });
+  }
+
+  test("hidden paths still get the 404.html page", async () => {
+    const res = await handle(
+      new Request("http://x/.env", { headers: { Accept: "text/html" } }),
+    );
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("<p>missing</p>");
+  });
+
+  test("/.well-known/ stays public", async () => {
+    const res = await handle(new Request("http://x/.well-known/security.txt"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("Contact: x");
   });
 });

@@ -293,11 +293,14 @@ export type StartOptions = {
   // The default port hops to the next free one when taken; an explicit
   // one (the CLI's --port, or any port passed to serve()) never does.
   portExplicit?: boolean;
+  // The CLI always prints the banner (-q only silences request logs);
+  // serve() skips it when quiet so embedding stays silent.
+  banner?: boolean;
 };
 
 export async function startServer(
   opts: Options,
-  { portExplicit = false }: StartOptions = {},
+  { portExplicit = false, banner = true }: StartOptions = {},
 ): Promise<ServerHandle> {
   const root = resolve(opts.root);
   validateRoot(root);
@@ -361,7 +364,9 @@ export async function startServer(
   if (!opts.compress) flags.push("--no-compress");
   if (opts.cache) flags.push("--cache");
 
-  logBanner(url, relative(process.cwd(), root) || ".", flags, networkUrl);
+  if (banner) {
+    logBanner(url, relative(process.cwd(), root) || ".", flags, networkUrl);
+  }
 
   let watcher: ReturnType<typeof watch> | undefined;
   if (opts.watch && hub) {
@@ -402,8 +407,9 @@ export async function startServer(
 export async function serve(
   options: Partial<Options> = {},
 ): Promise<ServerHandle> {
-  return startServer(
-    { ...DEFAULT_OPTIONS, ...options },
-    { portExplicit: options.port !== undefined },
-  );
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  return startServer(opts, {
+    portExplicit: options.port !== undefined,
+    banner: !opts.quiet,
+  });
 }

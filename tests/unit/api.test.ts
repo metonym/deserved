@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   mkdirSync,
@@ -37,6 +37,20 @@ describe("serve()", () => {
       expect(await res.text()).toContain("<h1>hi</h1>");
     } finally {
       await server.stop();
+      removeFixture(root);
+    }
+  });
+
+  test("quiet: true prints nothing, banner included", async () => {
+    const root = fixtureDir("quiet");
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const server = await serve({ root, port: 0, quiet: true, watch: true });
+      await fetch(`${server.url}/`);
+      await server.stop();
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
       removeFixture(root);
     }
   });

@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "../../src/cli";
 import { serve } from "../../src/index";
+import { DEFAULT_OPTIONS, startServer } from "../../src/server";
 
 const TMP = join(import.meta.dir, ".tmp-port-fallback");
 
@@ -31,12 +32,10 @@ describe("port fallback", () => {
     if (occupiedPort === undefined) throw new Error("failed to allocate port");
 
     try {
-      const server = await serve({
-        root,
-        port: occupiedPort,
-        portExplicit: false,
-        quiet: true,
-      });
+      const server = await startServer(
+        { ...DEFAULT_OPTIONS, root, port: occupiedPort, quiet: true },
+        { portExplicit: false },
+      );
       try {
         expect(server.port).toBeGreaterThan(occupiedPort);
         expect(server.port).toBeLessThanOrEqual(occupiedPort + 10);

@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { serve } from "../../src/index";
+import { createHandler, serve } from "../../src/index";
 
 const TMP = join(import.meta.dir, ".tmp-api");
 
@@ -171,6 +171,21 @@ describe("serve() root validation", () => {
     } finally {
       await server.stop();
       removeFixture(base);
+    }
+  });
+});
+
+describe("createHandler()", () => {
+  test("accepts partial options merged over DEFAULT_OPTIONS", async () => {
+    const root = fixtureDir("handler");
+    writeFileSync(join(root, "index.html"), "<h1>hi</h1>");
+    try {
+      const handle = createHandler({ root, quiet: true });
+      const res = await handle(new Request("http://x/"));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("<h1>hi</h1>");
+    } finally {
+      removeFixture(root);
     }
   });
 });

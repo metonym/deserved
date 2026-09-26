@@ -43,10 +43,12 @@ function printHelp() {
 `);
 }
 
+export type CliOptions = Options & { portExplicit: boolean };
+
 export function parseArgs(
   argv: string[],
   env: Record<string, string | undefined> = Bun.env,
-): Options {
+): CliOptions {
   const args = argv.slice(2);
   const opts: Options = { ...DEFAULT_OPTIONS };
   let root: string | undefined;
@@ -140,10 +142,8 @@ export function parseArgs(
   if (!portFlagSet && env.PORT !== undefined) {
     opts.port = parsePort(env.PORT, env.PORT);
   }
-  opts.portExplicit = portFlagSet;
-
   opts.root = resolve(root ?? opts.root);
-  return opts;
+  return { ...opts, portExplicit: portFlagSet };
 }
 
 // `shown` is what the error message echoes back (the whole `--port=x` flag
@@ -166,7 +166,7 @@ if (import.meta.main) {
 
   let handle: Awaited<ReturnType<typeof startServer>>;
   try {
-    handle = await startServer(opts);
+    handle = await startServer(opts, { portExplicit: opts.portExplicit });
   } catch (err) {
     if (err instanceof RootError) {
       console.error(`Error: ${err.message}`);

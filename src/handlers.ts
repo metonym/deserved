@@ -3,6 +3,7 @@ import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import { escapeHTML } from "bun";
 import {
   type createSseHub,
+  DEFAULT_OPTIONS,
   EVENTS_PATH,
   injectLiveReload,
   LIVE_PATH,
@@ -571,7 +572,11 @@ function extractPathname(url: string): string {
   return path === "" ? "/" : path;
 }
 
-export function createHandler(opts: Options, hub?: Hub): Handler {
+export function createHandler(
+  options: Partial<Options> = {},
+  hub?: Hub,
+): Handler {
+  const opts: Options = { ...DEFAULT_OPTIONS, ...options };
   const rootAbs = resolve(opts.root);
   const realRoot = realpathRoot(rootAbs);
   const resolution = createResolutionCache(rootAbs, realRoot, opts.watch);

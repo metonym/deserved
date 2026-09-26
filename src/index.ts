@@ -6,5 +6,4 @@ export {
   RootError,
   type ServerHandle,
   serve,
-  startServer,
 } from "./server";

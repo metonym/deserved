@@ -153,6 +153,20 @@ export function shouldSpaFallback(pathname: string): boolean {
   return pathname.indexOf(".", slashIdx + 1) === -1;
 }
 
+const WELL_KNOWN = "/.well-known";
+
+// Dotfiles (.env, .git/) stay private even when serving a project root;
+// /.well-known/ is the one dot-directory that's meant to be public.
+export function isHiddenPath(pathname: string): boolean {
+  const from =
+    pathname.startsWith(WELL_KNOWN) &&
+    (pathname.length === WELL_KNOWN.length ||
+      pathname[WELL_KNOWN.length] === "/")
+      ? WELL_KNOWN.length
+      : 0;
+  return pathname.indexOf("/.", from) !== -1;
+}
+
 export function resolveFileWithRoot(
   rootAbs: string,
   realRoot: string | null,
@@ -655,7 +669,8 @@ async function handleDecoded(
     );
   }
 
-  const resolved = resolveCached(pathname);
+  const hidden = isHiddenPath(pathname);
+  const resolved = hidden ? null : resolveCached(pathname);
 
   if (resolved) {
     if (resolved.kind === "dir-index" && !pathname.endsWith("/")) {
@@ -673,7 +688,7 @@ async function handleDecoded(
     }
   }
 
-  if (opts.dir) {
+  if (opts.dir && !hidden) {
     const dir = resolveDirCached(pathname);
     if (dir) {
       if (!pathname.endsWith("/"))

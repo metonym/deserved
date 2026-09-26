@@ -16,7 +16,7 @@ const result = await Bun.build({
   outdir: out,
   target: "bun",
   minify: true,
-  splitting: false,
+  splitting: true,
 });
 
 if (!result.success) {

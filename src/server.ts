@@ -330,42 +330,22 @@ export async function startServer(
   // A literal loopback IP throws. Bind to 127.0.0.1 so a second instance fails cleanly.
   const bindHost = opts.host === "localhost" ? "127.0.0.1" : opts.host;
 
-  const bindAt = (port: number) =>
-    Bun.serve({ port, hostname: bindHost, fetch });
-
   // Port 0 already means "any free port", so there's nothing to hop from.
-  const canFallback = !portExplicit && opts.port !== 0;
+  const maxHops =
+    !portExplicit && opts.port !== 0 ? MAX_PORT_FALLBACK_ATTEMPTS : 0;
 
-  let server: ReturnType<typeof Bun.serve>;
-  let boundPort = opts.port;
-  try {
-    server = bindAt(boundPort);
-  } catch (err) {
-    if (!canFallback || !isAddrInUseError(err)) {
-      throw new BindError(opts.host, boundPort, { cause: err });
-    }
-
-    let fallback: ReturnType<typeof Bun.serve> | undefined;
-    let candidate = opts.port;
-    let lastErr: unknown = err;
-    for (let attempt = 1; attempt <= MAX_PORT_FALLBACK_ATTEMPTS; attempt++) {
-      candidate = opts.port + attempt;
-      try {
-        fallback = bindAt(candidate);
-        boundPort = candidate;
-        break;
-      } catch (retryErr) {
-        if (!isAddrInUseError(retryErr)) {
-          throw new BindError(opts.host, candidate, { cause: retryErr });
-        }
-        lastErr = retryErr;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  for (let hop = 0; !server; hop++) {
+    const port = opts.port + hop;
+    try {
+      server = Bun.serve({ port, hostname: bindHost, fetch });
+    } catch (err) {
+      if (hop >= maxHops || !isAddrInUseError(err)) {
+        throw new BindError(opts.host, port, { cause: err });
       }
+      continue;
     }
-
-    if (!fallback)
-      throw new BindError(opts.host, candidate, { cause: lastErr });
-    server = fallback;
-    logInfo(`port ${opts.port} in use, using ${boundPort}`, opts.quiet);
+    if (hop > 0) logInfo(`port ${opts.port} in use, using ${port}`, opts.quiet);
   }
 
   const isWildcardHost = opts.host === "0.0.0.0" || opts.host === "::";

@@ -30,6 +30,7 @@ describe("directory trailing-slash redirect", () => {
   mkdirSync(join(root, "my docs"));
   writeFileSync(join(root, "my docs", "index.html"), "<h1>my docs</h1>");
   mkdirSync(join(root, "nodex"));
+  mkdirSync(join(root, "evil.com"));
   writeFileSync(join(root, "nodex", "file.txt"), "hi");
 
   afterAll(() => {
@@ -94,4 +95,13 @@ describe("directory trailing-slash redirect", () => {
     expect(res.headers.get("Location")).toBe("/sub/");
     expect(await res.text()).toBe("");
   });
+
+  for (const path of ["//evil.com", "///evil.com", "/\\evil.com"]) {
+    test(`GET ${path} never redirects off-host`, async () => {
+      const handle = createHandler(makeOpts(root, { dir: true }));
+      const res = await handle(new Request(`http://x${path}`));
+      expect(res.status).toBe(301);
+      expect(res.headers.get("Location")).toBe("/evil.com/");
+    });
+  }
 });

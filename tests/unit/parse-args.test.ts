@@ -77,4 +77,25 @@ describe("parseArgs", () => {
     expect(opts.port).toBe(4000);
     expect(opts.host).toBe("127.0.0.1");
   });
+
+  test("negated and re-enabled toggles: last one wins", () => {
+    const opts = parseArgs([
+      "bun",
+      "deserved",
+      "--no-dir",
+      "--dir",
+      "--compress",
+      "--no-compress",
+      "--cache",
+      "--no-cache",
+    ]);
+    expect(opts.dir).toBe(true);
+    expect(opts.compress).toBe(false);
+    expect(opts.cache).toBe(false);
+  });
+
+  test("a path that looks like an object key is still a path", () => {
+    const opts = parseArgs(["bun", "deserved", "constructor"]);
+    expect(opts.root.endsWith("constructor")).toBe(true);
+  });
 });

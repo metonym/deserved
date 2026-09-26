@@ -43,6 +43,14 @@ describe("e2e cli argument errors", () => {
     expect(stderr).toContain("Missing value for --port");
   });
 
+  test("empty --port= and --host= exit 1", async () => {
+    for (const flag of ["--port=", "--host="]) {
+      const { exitCode, stderr } = await run([flag]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain(`Missing value for ${flag.slice(0, -1)}`);
+    }
+  });
+
   test("missing value for --host exits 1", async () => {
     const { exitCode, stderr } = await run(["--host"]);
     expect(exitCode).toBe(1);

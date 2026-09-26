@@ -1,6 +1,6 @@
 # deserved
 
-Tiny (12.9 kB gzip), zero-dep Bun static server.
+Tiny (8.7 kB gzip), zero-dep Bun static server.
 
 ```bash
 bunx deserved .
@@ -30,10 +30,12 @@ bunx deserved [path] [options]
 | `-w, --watch` | Live reload via SSE |
 | `-o, --open` | Open the browser |
 | `--cors` | Enable CORS |
-| `--no-dir` | Disable directory listing |
-| `--cache` | Long-lived, immutable cache headers for assets |
-| `--no-compress` | Disable gzip |
+| `--dir`, `--no-dir` | Directory listing (default on) |
+| `--cache`, `--no-cache` | Long-lived, immutable cache headers for assets (default off) |
+| `--compress`, `--no-compress` | zstd/gzip compression (default on) |
 | `-q, --quiet` | Suppress request logs |
+| `-h, --help` | Show help |
+| `-v, --version` | Show version |
 
 ## Examples
 
@@ -68,17 +70,32 @@ CLI (`DEFAULT_OPTIONS`). It resolves to `{ port, hostname, url, stop() }`;
 `stop()` closes the server and, if `watch: true` was passed, the file
 watcher. Unlike the CLI, a bind failure (e.g. a port already in use) rejects
 the promise instead of exiting the process. A `port` passed to `serve()` is
-always treated as explicit — it never hops to another port.
+always treated as explicit — it never hops to another port. `quiet: true`
+silences all output, including the startup banner.
+
+To mount the file server inside your own `Bun.serve()`, use the request
+handler directly (it takes the same `Partial<Options>`; `watch` needs
+`serve()`, which owns the file watcher):
+
+```ts
+import { createHandler } from "deserved";
+
+Bun.serve({ fetch: createHandler({ root: "dist", spa: true, quiet: true }) });
+```
 
 ## Features
 
 - `Bun.file()` / `Bun.serve()`: no streams plumbing
+- Clean URLs: `/about` serves `about.html` or `about/index.html`
 - ETag + `304`
 - Range requests (`206`) for media
 - SPA mode (HTML Accept only; assets still 404)
-- Optional live reload (`--watch`) via Server-Sent Events
+- Custom `404.html` for browser requests
+- Optional live reload (`--watch`) via Server-Sent Events; tabs reconnect and reload after a server restart
 - CSS-only changes hot-swap stylesheets in place instead of a full page reload
-- Gzip compression
+- zstd or gzip compression, negotiated per request
 - Cache headers off by default (`no-cache`); opt in per-run with `--cache` for long-lived, immutable asset caching
 - Directory listings (disable with `--no-dir`)
-- Colored request logs
+- Dotfiles (`.env`, `.git/`) are never served, except `/.well-known/`
+- Symlinks can't escape the served root
+- Colored request logs (plain when piped or with `NO_COLOR`)

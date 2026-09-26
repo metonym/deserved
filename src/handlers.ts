@@ -255,7 +255,7 @@ function markRecent<T>(map: Map<string, T>, key: string, entry: T): void {
 // becomes visible within this window.
 export const RESOLUTION_TTL_MS = 500;
 
-type CachedResolution = ResolvedFile | null;
+type Cached<T> = { value: T | null; at: number };
 
 // Remembers which candidate (if any) a pathname resolves to, so a repeat
 // request skips the safeJoin + realpath containment walk across up to 3
@@ -287,65 +287,61 @@ function createResolutionCache(
   realRoot: string | null,
   watch: boolean,
 ) {
-  const cache = new Map<string, { value: CachedResolution; at: number }>();
-  const dirs = new Map<string, { value: string | null; at: number }>();
+  const files = new Map<string, Cached<ResolvedFile>>();
+  const dirs = new Map<string, Cached<string>>();
 
-  function resolveCached(pathname: string): ResolvedFile | null {
-    const cached = cache.get(pathname);
+  // `revalidate` returns the value to serve for a fresh cached winner, or
+  // null if it no longer holds (deleted or changed kind), forcing a
+  // re-probe.
+  function lookup<T>(
+    map: Map<string, Cached<T>>,
+    pathname: string,
+    probe: (pathname: string) => T | null,
+    revalidate: (value: T) => T | null,
+  ): T | null {
+    const cached = map.get(pathname);
     if (cached && (watch || Date.now() - cached.at < RESOLUTION_TTL_MS)) {
-      if (cached.value === null) {
-        markRecent(cache, pathname, cached);
-        return null;
-      }
-      if (watch) {
-        markRecent(cache, pathname, cached);
-        return cached.value;
-      }
-      const hit = statFile(cached.value.path, cached.value.kind);
-      if (hit) {
-        markRecent(cache, pathname, cached);
+      const hit = cached.value === null ? null : revalidate(cached.value);
+      if (cached.value === null || hit !== null) {
+        markRecent(map, pathname, cached);
         return hit;
       }
-      // Cached winner disappeared or changed kind -- re-probe below.
     }
 
-    const resolved = resolveFileWithRoot(rootAbs, realRoot, pathname);
-    evictOldest(cache, RESOLUTION_CACHE_LIMIT);
-    cache.set(pathname, { value: resolved, at: Date.now() });
-    return resolved;
+    const value = probe(pathname);
+    evictOldest(map, RESOLUTION_CACHE_LIMIT);
+    map.set(pathname, { value, at: Date.now() });
+    return value;
   }
 
-  function resolveDirCached(pathname: string): string | null {
-    const cached = dirs.get(pathname);
-    if (cached && (watch || Date.now() - cached.at < RESOLUTION_TTL_MS)) {
-      if (cached.value === null) {
-        markRecent(dirs, pathname, cached);
-        return null;
-      }
-      try {
-        if (statSync(cached.value).isDirectory()) {
-          markRecent(dirs, pathname, cached);
-          return cached.value;
-        }
-      } catch {}
-      // Cached winner disappeared or changed kind -- re-probe below.
-    }
-
-    const resolved = resolveDirWithRoot(rootAbs, realRoot, pathname);
-    evictOldest(dirs, RESOLUTION_CACHE_LIMIT);
-    dirs.set(pathname, { value: resolved, at: Date.now() });
-    return resolved;
-  }
+  const probeFile = (pathname: string) =>
+    resolveFileWithRoot(rootAbs, realRoot, pathname);
+  const probeDir = (pathname: string) =>
+    resolveDirWithRoot(rootAbs, realRoot, pathname);
+  const revalidateFile = watch
+    ? (file: ResolvedFile) => file
+    : (file: ResolvedFile) => statFile(file.path, file.kind);
+  const revalidateDir = (dir: string) => (isDirectory(dir) ? dir : null);
 
   return {
-    resolveCached,
-    resolveDirCached,
+    resolveCached: (pathname: string) =>
+      lookup(files, pathname, probeFile, revalidateFile),
+    resolveDirCached: (pathname: string) =>
+      lookup(dirs, pathname, probeDir, revalidateDir),
     invalidate: () => {
-      cache.clear();
+      files.clear();
       dirs.clear();
     },
-    size: () => cache.size,
+    size: () => files.size,
   };
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function candidateKind(candidate: string): ResolvedFile["kind"] {
@@ -418,12 +414,7 @@ export function resolveDirWithRoot(
   const full = safeJoin(rootAbs, relative || ".");
   if (!full) return null;
   const real = containedPath(realRoot, full);
-  if (!real) return null;
-  try {
-    return statSync(real).isDirectory() ? real : null;
-  } catch {
-    return null;
-  }
+  return real && isDirectory(real) ? real : null;
 }
 
 type DirEntry = {
@@ -834,11 +825,8 @@ function createCompressionCache() {
 
   function touch(cacheKey: string, entry: CompressedEntry): void {
     const prev = cache.get(cacheKey);
-    if (prev) {
-      cache.delete(cacheKey);
-      bytes -= prev.data.size;
-    }
-    cache.set(cacheKey, entry);
+    if (prev) bytes -= prev.data.size;
+    markRecent(cache, cacheKey, entry);
     bytes += entry.data.size;
 
     while (bytes > COMPRESSED_CACHE_BYTE_BUDGET && cache.size > 1) {

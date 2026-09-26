@@ -79,6 +79,14 @@ export function makeEtag(size: number, mtimeMs: number, tag = ""): string {
   return `"${size}-${Math.trunc(mtimeMs)}${tag}"`;
 }
 
+// A strong ETag promises byte-identical bodies, which a compressed and an
+// identity response for the same file aren't. Weak comparison (used for
+// If-None-Match) still matches, so 304s keep working; If-Range, which
+// needs a strong match, falls back to a full response.
+function weaken(tag: string): string {
+  return `W/${tag}`;
+}
+
 function stripWeak(tag: string): string {
   return tag.startsWith("W/") ? tag.slice(2) : tag;
 }
@@ -899,6 +907,7 @@ async function tryCompress(
   if (!compressed) return null;
   headers["Content-Encoding"] = encoding;
   headers["Content-Length"] = String(compressed.size);
+  headers.ETag = weaken(headers.ETag ?? "");
   delete headers["Accept-Ranges"];
   headers.Vary = "Accept-Encoding";
   return new Response(compressed, { status: 200, headers });
@@ -918,10 +927,14 @@ async function serveFile(
   // run will 304 the old body (still requesting /__live.js).
   const etag = makeEtag(size, mtimeMs, opts.watch && htmlish ? "-live" : "");
   const compressible = opts.compress && isCompressible(type);
+  const liveHtml = opts.watch && htmlish;
+  const encoding =
+    compressible && (liveHtml || size < 2_000_000) ? pickEncoding(req) : null;
 
   if (isNotModified(req, etag, mtimeMs)) {
     const notModifiedHeaders = baseHeaders(etag, opts, htmlish, mtimeMs);
     if (compressible) notModifiedHeaders.Vary = "Accept-Encoding";
+    if (encoding) notModifiedHeaders.ETag = weaken(etag);
     return new Response(null, {
       status: 304,
       headers: notModifiedHeaders,
@@ -960,9 +973,6 @@ async function serveFile(
   // HEAD takes the same path as GET (finish() drops the body) so it
   // reports the same Content-Encoding and Content-Length a GET would.
   // Compressed output is cached, so a HEAD costs at most one compression.
-  const liveHtml = opts.watch && htmlish;
-  const encoding =
-    compressible && (liveHtml || size < 2_000_000) ? pickEncoding(req) : null;
 
   if (liveHtml) {
     if (encoding) {

@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -247,5 +247,44 @@ describe("single-flight compression", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ETag per encoding", () => {
+  const root = mkdtempSync(join(tmpdir(), "etag-encoding-"));
+  writeFileSync(join(root, "app.js"), "console.log(1);\n".repeat(200));
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("compressed responses carry a weak ETag, identity a strong one", async () => {
+    const handle = createHandler(makeOpts(root));
+    const gzip = await handle(
+      new Request("http://x/app.js", {
+        headers: { "Accept-Encoding": "gzip" },
+      }),
+    );
+    const identity = await handle(new Request("http://x/app.js"));
+    const strong = identity.headers.get("ETag") ?? "";
+    expect(strong.startsWith('"')).toBe(true);
+    expect(gzip.headers.get("ETag")).toBe(`W/${strong}`);
+  });
+
+  test("a weak ETag revalidates to a 304 that stays weak", async () => {
+    const handle = createHandler(makeOpts(root));
+    const first = await handle(
+      new Request("http://x/app.js", {
+        headers: { "Accept-Encoding": "gzip" },
+      }),
+    );
+    const etag = first.headers.get("ETag") ?? "";
+    const res = await handle(
+      new Request("http://x/app.js", {
+        headers: { "Accept-Encoding": "gzip", "If-None-Match": etag },
+      }),
+    );
+    expect(res.status).toBe(304);
+    expect(res.headers.get("ETag")).toBe(etag);
   });
 });

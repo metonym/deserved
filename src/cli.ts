@@ -49,7 +49,7 @@ export function parseArgs(
 ): Options {
   const args = argv.slice(2);
   const opts: Options = { ...DEFAULT_OPTIONS };
-  let root = opts.root;
+  let root: string | undefined;
   let portFlagSet = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -133,6 +133,7 @@ export function parseArgs(
     if (a.startsWith("-")) {
       fail(`Unknown option: ${a}`);
     }
+    if (root !== undefined) fail(`Unexpected argument: ${a}`);
     root = a;
   }
 
@@ -141,7 +142,7 @@ export function parseArgs(
   }
   opts.portExplicit = portFlagSet;
 
-  opts.root = resolve(root);
+  opts.root = resolve(root ?? opts.root);
   return opts;
 }
 

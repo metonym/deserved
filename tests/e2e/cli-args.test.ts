@@ -55,6 +55,12 @@ describe("e2e cli argument errors", () => {
     expect(stderr).toContain("Unknown option: --bogus");
   });
 
+  test("a second path exits 1 instead of replacing the first", async () => {
+    const { exitCode, stderr } = await run(["dist", "docs"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Unexpected argument: docs");
+  });
+
   test("--help exits 0 and prints usage", async () => {
     const { exitCode, stdout } = await run(["--help"]);
     expect(exitCode).toBe(0);

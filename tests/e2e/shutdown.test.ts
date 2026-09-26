@@ -56,3 +56,24 @@ describe("e2e graceful shutdown", () => {
     }
   });
 });
+
+describe("e2e output", () => {
+  test("piped stdout has no ANSI escapes", async () => {
+    const root = fixtureDir("output-plain");
+    write(root, "index.html", "<!doctype html><h1>v1</h1>");
+
+    const cli = await startCli(root);
+    try {
+      cli.proc.kill("SIGTERM");
+      await cli.proc.exited;
+      const stdout = await new Response(
+        cli.proc.stdout as ReadableStream,
+      ).text();
+      expect(stdout).toContain("deserved");
+      expect(stdout).not.toContain("\x1b[");
+    } finally {
+      cli.stop();
+      removeFixture(root);
+    }
+  });
+});

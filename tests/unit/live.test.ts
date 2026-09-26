@@ -12,6 +12,7 @@ import {
   LIVE_PATH,
   LIVE_SCRIPT,
   logRequest,
+  shouldColor,
 } from "../../src/server";
 
 describe("injectLiveReload", () => {
@@ -99,5 +100,18 @@ describe("logRequest", () => {
     } finally {
       writeSpy.mockRestore();
     }
+  });
+});
+
+describe("shouldColor", () => {
+  test("colors a TTY unless NO_COLOR is set", () => {
+    expect(shouldColor(true, {})).toBe(true);
+    expect(shouldColor(true, { NO_COLOR: "1" })).toBe(false);
+    expect(shouldColor(true, { NO_COLOR: "" })).toBe(true);
+  });
+
+  test("never colors piped output", () => {
+    expect(shouldColor(false, {})).toBe(false);
+    expect(shouldColor(undefined, {})).toBe(false);
   });
 });

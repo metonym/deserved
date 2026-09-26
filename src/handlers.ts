@@ -639,6 +639,10 @@ async function handleDecoded(
   const { opts, hub, resolveCached, resolveDirCached, getCompressed } = ctx;
   const send = (res: Response) => finish(method, pathname, opts, res);
 
+  if (opts.cors && method === "OPTIONS") {
+    return send(new Response(null, { status: 204 }));
+  }
+
   if (method !== "GET" && method !== "HEAD") {
     const res = new Response("Method Not Allowed", {
       status: 405,

@@ -1,7 +1,7 @@
 import { statSync, watch } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { relative, resolve } from "node:path";
-import { createHandler, withCors } from "./handlers";
+import { createHandler } from "./handlers";
 
 export type Options = {
   root: string;
@@ -301,14 +301,8 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
   // A literal loopback IP throws. Bind to 127.0.0.1 so a second instance fails cleanly.
   const bindHost = opts.host === "localhost" ? "127.0.0.1" : opts.host;
 
-  const serveFetch = async (req: Request) => {
-    if (opts.cors && req.method === "OPTIONS") {
-      return withCors(new Response(null, { status: 204 }), opts);
-    }
-    return fetch(req);
-  };
   const bindAt = (port: number) =>
-    Bun.serve({ port, hostname: bindHost, fetch: serveFetch });
+    Bun.serve({ port, hostname: bindHost, fetch });
 
   // A default (non-explicit) port hops to the next free one instead of
   // failing; an explicit --port (or port 0, "any free port") never does.

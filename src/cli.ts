@@ -45,6 +45,37 @@ function printHelp() {
 
 export type CliOptions = Options & { portExplicit: boolean };
 
+type BooleanOption = {
+  [K in keyof Options]: Options[K] extends boolean ? K : never;
+}[keyof Options];
+
+// A Map, not an object literal, so arguments like `constructor` or
+// `__proto__` can't hit prototype keys.
+const BOOLEAN_FLAGS = new Map<string, [BooleanOption, boolean]>([
+  ["-s", ["spa", true]],
+  ["--spa", ["spa", true]],
+  ["-w", ["watch", true]],
+  ["--watch", ["watch", true]],
+  ["-o", ["open", true]],
+  ["--open", ["open", true]],
+  ["--cors", ["cors", true]],
+  ["--dir", ["dir", true]],
+  ["--no-dir", ["dir", false]],
+  ["--cache", ["cache", true]],
+  ["--no-cache", ["cache", false]],
+  ["--compress", ["compress", true]],
+  ["--no-compress", ["compress", false]],
+  ["-q", ["quiet", true]],
+  ["--quiet", ["quiet", true]],
+]);
+
+const VALUE_FLAGS = new Map<string, "port" | "host">([
+  ["-p", "port"],
+  ["--port", "port"],
+  ["-H", "host"],
+  ["--host", "host"],
+]);
+
 export function parseArgs(
   argv: string[],
   env: Record<string, string | undefined> = Bun.env,
@@ -66,75 +97,32 @@ export function parseArgs(
       console.log(VERSION);
       process.exit(0);
     }
-    if (a === "-s" || a === "--spa") {
-      opts.spa = true;
+
+    const bool = BOOLEAN_FLAGS.get(a);
+    if (bool) {
+      opts[bool[0]] = bool[1];
       continue;
     }
-    if (a === "-w" || a === "--watch") {
-      opts.watch = true;
+
+    // `--port=8080` carries its value inline; `-p 8080` takes the next arg.
+    const eq = a.startsWith("--") ? a.indexOf("=") : -1;
+    const flag = eq === -1 ? a : a.slice(0, eq);
+    const key = VALUE_FLAGS.get(flag);
+    if (key) {
+      const value = eq === -1 ? args[++i] : a.slice(eq + 1);
+      if (!value || (eq === -1 && value.startsWith("-"))) {
+        fail(`Missing value for ${flag}`);
+      }
+      if (key === "port") {
+        opts.port = parsePort(value, eq === -1 ? value : a);
+        portFlagSet = true;
+      } else {
+        opts.host = value;
+      }
       continue;
     }
-    if (a === "-o" || a === "--open") {
-      opts.open = true;
-      continue;
-    }
-    if (a === "--cors") {
-      opts.cors = true;
-      continue;
-    }
-    if (a === "--dir") {
-      opts.dir = true;
-      continue;
-    }
-    if (a === "--no-dir") {
-      opts.dir = false;
-      continue;
-    }
-    if (a === "--cache") {
-      opts.cache = true;
-      continue;
-    }
-    if (a === "--no-cache") {
-      opts.cache = false;
-      continue;
-    }
-    if (a === "--compress") {
-      opts.compress = true;
-      continue;
-    }
-    if (a === "--no-compress") {
-      opts.compress = false;
-      continue;
-    }
-    if (a === "-q" || a === "--quiet") {
-      opts.quiet = true;
-      continue;
-    }
-    if (a === "-p" || a === "--port") {
-      const next = args[++i];
-      if (!next || next.startsWith("-")) fail(`Missing value for ${a}`);
-      opts.port = parsePort(next, next);
-      portFlagSet = true;
-      continue;
-    }
-    if (a === "-H" || a === "--host") {
-      const next = args[++i];
-      if (!next || next.startsWith("-")) fail(`Missing value for ${a}`);
-      opts.host = next;
-      continue;
-    }
-    if (a.startsWith("--port=")) {
-      opts.port = parsePort(a.slice("--port=".length), a);
-      portFlagSet = true;
-      continue;
-    }
-    if (a.startsWith("--host=")) {
-      opts.host = a.slice("--host=".length);
-      continue;
-    }
-    if (a.startsWith("-")) {
-      fail(`Unknown option: ${a}`);
-    }
+
+    if (a.startsWith("-")) fail(`Unknown option: ${a}`);
     if (root !== undefined) fail(`Unexpected argument: ${a}`);
     root = a;
   }
@@ -150,7 +138,7 @@ export function parseArgs(
 // for the inline form, the bare value otherwise).
 function parsePort(value: string, shown: string): number {
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 0 || n > 65535)
+  if (value.trim() === "" || !Number.isInteger(n) || n < 0 || n > 65535)
     fail(`Invalid port: ${shown}`);
   return n;
 }

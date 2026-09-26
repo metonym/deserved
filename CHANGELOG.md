@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0 — 2026-09-25
+
+**Breaking changes:**
+
+- Public API is `serve` and `createHandler`. `startServer` and `portExplicit` are internal, and `createHandler` takes `Partial<Options>` like `serve()`.
+
+**Features**
+
+- Live reload survives a server restart: the client waits for the event stream to reconnect instead of reloading into an error page after one second.
+- Drop ANSI colors when stdout isn't a TTY or `NO_COLOR` is set.
+
+**Fixes**
+
+- `serve({ quiet: true })` is fully silent, including the startup banner. CLI `-q` still prints the banner and only silences request logs.
+- Reject a second path argument (`deserved dist docs` no longer silently serves `docs`).
+- Empty `--port=` and `--host=` error instead of binding port `0` or host `""`.
+- Don't subscribe an SSE client on `HEAD /__events`.
+- Respect `q=0` when negotiating compression (`gzip;q=0` refuses gzip).
+- Send a weak ETag with compressed responses so `If-None-Match` 304s still work and `If-Range` falls back to a full response.
+- Don't block startup when the browser-open command waits for the browser to exit.
+- `HEAD` reports the same `Content-Encoding` and `Content-Length` as `GET`.
+- Answer CORS preflight from `createHandler` (embedding with `cors: true` no longer returns `405` on `OPTIONS`).
+- Collapse leading slashes on directory trailing-slash redirects so `//evil.com` isn't an open redirect.
+- Stop serving dotfiles outside `/.well-known/` (they 404, including via `404.html`).
+
+**Performance**
+
+- Publish one shared chunk for the CLI and library (8.6 kB gzipped, down from 14.7 kB).
+
 ## 0.5.1 — 2026-09-15
 
 **Features**

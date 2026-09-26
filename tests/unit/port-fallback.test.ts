@@ -34,7 +34,7 @@ describe("port fallback", () => {
     try {
       const server = await startServer(
         { ...DEFAULT_OPTIONS, root, port: occupiedPort, quiet: true },
-        { portExplicit: false },
+        { portExplicit: false, banner: false },
       );
       try {
         expect(server.port).toBeGreaterThan(occupiedPort);

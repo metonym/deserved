@@ -3,7 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "../../src/cli";
 import { serve } from "../../src/index";
-import { DEFAULT_OPTIONS, startServer } from "../../src/server";
+import { DEFAULT_OPTIONS } from "../../src/options";
+import { startServer } from "../../src/server";
 
 const TMP = join(import.meta.dir, ".tmp-port-fallback");
 

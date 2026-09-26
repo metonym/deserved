@@ -15,7 +15,7 @@ import {
   RESOLUTION_CACHE_LIMIT,
   RESOLUTION_TTL_MS,
 } from "../../src/handlers";
-import type { Options } from "../../src/server";
+import type { Options } from "../../src/options";
 import { formatUrl } from "../../src/server";
 
 function makeOpts(root: string, overrides: Partial<Options> = {}): Options {

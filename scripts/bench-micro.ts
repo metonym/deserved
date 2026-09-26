@@ -44,7 +44,9 @@ import {
   safeJoin,
   shouldSpaFallback,
 } from "../src/handlers";
-import { DEFAULT_OPTIONS, injectLiveReload, logRequest } from "../src/server";
+import { injectLiveReload } from "../src/live";
+import { logRequest } from "../src/log";
+import { DEFAULT_OPTIONS } from "../src/options";
 import { assertRealistic, fakeHtml, fakeJs } from "./bench-fixture";
 
 const root = mkdtempSync(join(tmpdir(), "deserved-bench-micro-"));

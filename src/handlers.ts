@@ -2,16 +2,15 @@ import { readdirSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import { escapeHTML } from "bun";
 import {
-  type createSseHub,
-  DEFAULT_OPTIONS,
   EVENTS_PATH,
+  type Hub,
   injectLiveReload,
   LIVE_PATH,
   LIVE_SCRIPT,
-  logRequest,
-  type Options,
   SSE_HEADERS,
-} from "./server";
+} from "./live";
+import { logRequest } from "./log";
+import { DEFAULT_OPTIONS, type Options } from "./options";
 
 export type ResolvedFile = {
   path: string;
@@ -28,8 +27,6 @@ export type Handler = {
   resolutionCacheSize(): number;
   compressedCacheBytes(): number;
 };
-
-type Hub = ReturnType<typeof createSseHub>;
 
 const encoder = new TextEncoder();
 const FALLBACK = "application/octet-stream";

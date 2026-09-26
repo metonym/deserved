@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyBatch, isIgnoredWatchPath } from "../../src/server";
+import { classifyBatch, isIgnoredWatchPath } from "../../src/live";
 
 describe("isIgnoredWatchPath", () => {
   test("ignores nested .git churn", () => {

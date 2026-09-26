@@ -52,4 +52,16 @@ describe("mime", () => {
     ).toBe(null);
     expect(pickEncoding(new Request("http://x"))).toBe(null);
   });
+
+  test("pickEncoding skips encodings refused with q=0", () => {
+    const pick = (value: string) =>
+      pickEncoding(
+        new Request("http://x", { headers: { "Accept-Encoding": value } }),
+      );
+    expect(pick("zstd;q=0, gzip")).toBe("gzip");
+    expect(pick("gzip;q=0")).toBe(null);
+    expect(pick("gzip; q=0.0, zstd;q=0")).toBe(null);
+    expect(pick("gzip;q=0.5, zstd;q=0")).toBe("gzip");
+    expect(pick("zstd;q=0.8, gzip;q=0")).toBe("zstd");
+  });
 });

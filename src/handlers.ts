@@ -148,9 +148,24 @@ export type CompressionEncoding = "zstd" | "gzip";
 // zstd compresses faster and smaller than gzip, but not every client speaks
 // it yet (e.g. Safari), so negotiate rather than replacing gzip outright.
 export function pickEncoding(req: Request): CompressionEncoding | null {
-  const accept = req.headers.get("Accept-Encoding") ?? "";
-  if (accept.includes("zstd")) return "zstd";
-  if (accept.includes("gzip")) return "gzip";
+  const accept = req.headers.get("Accept-Encoding");
+  if (!accept) return null;
+  // Browsers never send q=0, so only parse when an encoding might be
+  // explicitly refused (e.g. `gzip;q=0`).
+  if (!accept.includes("q=0")) {
+    if (accept.includes("zstd")) return "zstd";
+    if (accept.includes("gzip")) return "gzip";
+    return null;
+  }
+  const accepted = new Set<string>();
+  for (const part of accept.split(",")) {
+    const [name = "", ...params] = part.split(";");
+    const q = params.map((p) => p.trim()).find((p) => p.startsWith("q="));
+    if (q !== undefined && Number(q.slice(2)) === 0) continue;
+    accepted.add(name.trim().toLowerCase());
+  }
+  if (accepted.has("zstd")) return "zstd";
+  if (accepted.has("gzip")) return "gzip";
   return null;
 }
 

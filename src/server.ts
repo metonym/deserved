@@ -151,14 +151,26 @@ export function createSseHub() {
   return { subscribe, broadcast, close };
 }
 
+// Plain text when piped (CI logs, `| tee`) or when NO_COLOR is set
+// (https://no-color.org).
+export function shouldColor(
+  isTTY: boolean | undefined,
+  env: Record<string, string | undefined>,
+): boolean {
+  return isTTY === true && !env.NO_COLOR;
+}
+
+const useColor = shouldColor(process.stdout.isTTY, process.env);
+const ansi = (code: number) => (useColor ? `\x1b[${code}m` : "");
+
 const c = {
-  reset: "\x1b[0m",
-  dim: "\x1b[2m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  red: "\x1b[31m",
-  cyan: "\x1b[36m",
-  bold: "\x1b[1m",
+  reset: ansi(0),
+  dim: ansi(2),
+  green: ansi(32),
+  yellow: ansi(33),
+  red: ansi(31),
+  cyan: ansi(36),
+  bold: ansi(1),
 } as const;
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: strip control chars from logs

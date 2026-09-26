@@ -890,13 +890,11 @@ function createCompressionCache() {
 
 async function tryCompress(
   getCompressed: GetCompressed,
-  req: Request,
+  encoding: CompressionEncoding,
   headers: Record<string, string>,
   cacheKey: { key: string; size: number; mtimeMs: number },
   loadRaw: () => Promise<Uint8Array<ArrayBuffer>>,
 ): Promise<Response | null> {
-  const encoding = pickEncoding(req);
-  if (!encoding) return null;
   const compressed = await getCompressed(cacheKey, encoding, loadRaw);
   if (!compressed) return null;
   headers["Content-Encoding"] = encoding;
@@ -959,18 +957,20 @@ async function serveFile(
     }
   }
 
-  if (req.method === "HEAD") {
-    headers["Content-Length"] = String(size);
-    return new Response(null, { status: 200, headers });
-  }
+  // HEAD takes the same path as GET (finish() drops the body) so it
+  // reports the same Content-Encoding and Content-Length a GET would.
+  // Compressed output is cached, so a HEAD costs at most one compression.
+  const liveHtml = opts.watch && htmlish;
+  const encoding =
+    compressible && (liveHtml || size < 2_000_000) ? pickEncoding(req) : null;
 
-  if (opts.watch && htmlish && req.method === "GET") {
-    if (compressible) {
+  if (liveHtml) {
+    if (encoding) {
       // NUL can't appear in a real path, so it safely namespaces the
       // live-injected variant from the raw-file cache entry below.
       const res = await tryCompress(
         getCompressed,
-        req,
+        encoding,
         headers,
         { key: `${path}\0live`, size, mtimeMs },
         async () => encoder.encode(injectLiveReload(await file.text())),
@@ -983,10 +983,10 @@ async function serveFile(
     return new Response(html, { status: 200, headers });
   }
 
-  if (compressible && req.method === "GET" && size < 2_000_000) {
+  if (encoding) {
     const res = await tryCompress(
       getCompressed,
-      req,
+      encoding,
       headers,
       { key: path, size, mtimeMs },
       () => file.bytes(),

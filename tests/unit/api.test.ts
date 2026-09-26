@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { serve } from "../../src/index";
 
@@ -32,6 +38,41 @@ describe("serve()", () => {
     } finally {
       await server.stop();
       removeFixture(root);
+    }
+  });
+
+  test("open: true does not wait for the browser command to exit", async () => {
+    const root = fixtureDir("open");
+    const bin = fixtureDir("open-bin");
+    // Stand-ins for open/xdg-open that never exit on their own, like an
+    // xdg-open that blocks until the browser closes.
+    for (const name of ["open", "xdg-open"]) {
+      writeFileSync(join(bin, name), "#!/bin/sh\nsleep 30\n");
+      chmodSync(join(bin, name), 0o755);
+    }
+    // Bun resolves executables against the PATH it started with, so the
+    // stand-ins only take effect in a fresh process.
+    const script = `
+      const { serve } = await import(${JSON.stringify(join(import.meta.dir, "../../src/index.ts"))});
+      const server = await serve({ root: ${JSON.stringify(root)}, port: 0, quiet: true, open: true });
+      await server.stop();
+      process.exit(0);
+    `;
+    try {
+      const proc = Bun.spawn(["bun", "-e", script], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      const exited = await Promise.race([
+        proc.exited,
+        Bun.sleep(5000).then(() => "timeout"),
+      ]);
+      proc.kill();
+      expect(exited).toBe(0);
+    } finally {
+      removeFixture(root);
+      removeFixture(bin);
     }
   });
 

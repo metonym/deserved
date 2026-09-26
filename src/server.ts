@@ -266,10 +266,11 @@ function openCommand(url: string): string[] {
   return ["xdg-open", url];
 }
 
-async function openBrowser(url: string): Promise<void> {
+// Fire and forget: some xdg-open setups block until the browser exits,
+// which would otherwise hold up startServer() for the whole session.
+function openBrowser(url: string): void {
   try {
-    await Bun.spawn(openCommand(url), { stdout: "ignore", stderr: "ignore" })
-      .exited;
+    Bun.spawn(openCommand(url), { stdout: "ignore", stderr: "ignore" }).unref();
   } catch {
     console.error(`Could not open browser for ${url}`);
   }
@@ -387,9 +388,7 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
     logInfo("server stopped", opts.quiet);
   };
 
-  if (opts.open) {
-    await openBrowser(url);
-  }
+  if (opts.open) openBrowser(url);
 
   return { port: server.port ?? opts.port, hostname: displayHost, url, stop };
 }

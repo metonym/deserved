@@ -6,7 +6,6 @@ import { createHandler } from "./handlers";
 export type Options = {
   root: string;
   port: number;
-  portExplicit: boolean;
   host: string;
   spa: boolean;
   watch: boolean;
@@ -21,7 +20,6 @@ export type Options = {
 export const DEFAULT_OPTIONS = {
   root: ".",
   port: 3000,
-  portExplicit: false,
   host: "localhost",
   spa: false,
   watch: false,
@@ -291,7 +289,16 @@ function validateRoot(rootPath: string): void {
   }
 }
 
-export async function startServer(opts: Options): Promise<ServerHandle> {
+export type StartOptions = {
+  // The default port hops to the next free one when taken; an explicit
+  // one (the CLI's --port, or any port passed to serve()) never does.
+  portExplicit?: boolean;
+};
+
+export async function startServer(
+  opts: Options,
+  { portExplicit = false }: StartOptions = {},
+): Promise<ServerHandle> {
   const root = resolve(opts.root);
   validateRoot(root);
 
@@ -305,9 +312,8 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
   const bindAt = (port: number) =>
     Bun.serve({ port, hostname: bindHost, fetch });
 
-  // A default (non-explicit) port hops to the next free one instead of
-  // failing; an explicit --port (or port 0, "any free port") never does.
-  const canFallback = !opts.portExplicit && opts.port !== 0;
+  // Port 0 already means "any free port", so there's nothing to hop from.
+  const canFallback = !portExplicit && opts.port !== 0;
 
   let server: ReturnType<typeof Bun.serve>;
   let boundPort = opts.port;
@@ -396,6 +402,8 @@ export async function startServer(opts: Options): Promise<ServerHandle> {
 export async function serve(
   options: Partial<Options> = {},
 ): Promise<ServerHandle> {
-  const portExplicit = options.portExplicit ?? options.port !== undefined;
-  return startServer({ ...DEFAULT_OPTIONS, ...options, portExplicit });
+  return startServer(
+    { ...DEFAULT_OPTIONS, ...options },
+    { portExplicit: options.port !== undefined },
+  );
 }

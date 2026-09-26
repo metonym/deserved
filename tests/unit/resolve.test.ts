@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -10,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildCandidates,
-  realContainedPath,
+  resolveFileWithRoot,
   safeJoin,
 } from "../../src/handlers";
 
@@ -46,7 +47,10 @@ describe("safeJoin", () => {
   });
 });
 
-describe("realContainedPath", () => {
+describe("resolveFileWithRoot containment", () => {
+  const resolve = (root: string, pathname: string) =>
+    resolveFileWithRoot(root, realpathSync(root), pathname);
+
   test("blocks a symlink that resolves outside root", () => {
     const base = mkdtempSync(join(tmpdir(), "deserved-real-"));
     const outside = join(base, "outside");
@@ -57,9 +61,7 @@ describe("realContainedPath", () => {
     symlinkSync(outside, join(root, "escape"));
 
     try {
-      expect(
-        realContainedPath(root, join(root, "escape", "secret.txt")),
-      ).toBeNull();
+      expect(resolve(root, "/escape/secret.txt")).toBeNull();
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -73,9 +75,8 @@ describe("realContainedPath", () => {
     symlinkSync(join(root, "real"), join(root, "alias"));
 
     try {
-      const real = realContainedPath(root, join(root, "alias", "file.txt"));
-      expect(real).toBeTruthy();
-      expect(real?.endsWith(join("real", "file.txt"))).toBe(true);
+      const resolved = resolve(root, "/alias/file.txt");
+      expect(resolved?.path.endsWith(join("real", "file.txt"))).toBe(true);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -84,21 +85,13 @@ describe("realContainedPath", () => {
   test("returns null for a path that does not exist", () => {
     const base = mkdtempSync(join(tmpdir(), "deserved-real-"));
     try {
-      expect(realContainedPath(base, join(base, "nope.txt"))).toBeNull();
+      expect(resolve(base, "/nope.txt")).toBeNull();
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
   });
 
   test("returns null when the root itself does not exist", () => {
-    const base = mkdtempSync(join(tmpdir(), "deserved-real-"));
-    const missingRoot = join(base, "nope");
-    try {
-      expect(
-        realContainedPath(missingRoot, join(missingRoot, "file.txt")),
-      ).toBeNull();
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
+    expect(resolveFileWithRoot("/nope", null, "/file.txt")).toBeNull();
   });
 });

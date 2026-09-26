@@ -100,11 +100,6 @@ function etagMatches(inm: string, etag: string): boolean {
   return inm.split(",").some((t) => stripWeak(t.trim()) === etag);
 }
 
-export function notModified(req: Request, etag: string): boolean {
-  const inm = req.headers.get("If-None-Match");
-  return inm ? etagMatches(inm, etag) : false;
-}
-
 export function notModifiedSince(req: Request, mtimeMs: number): boolean {
   const ims = req.headers.get("If-Modified-Since");
   if (!ims) return false;
@@ -394,14 +389,6 @@ function realpathRoot(rootAbs: string): string | null {
   } catch {
     return null;
   }
-}
-
-export function realContainedPath(
-  rootAbs: string,
-  full: string,
-): string | null {
-  const realRoot = realpathRoot(rootAbs);
-  return realRoot ? containedPath(realRoot, full) : null;
 }
 
 export function resolveDirWithRoot(

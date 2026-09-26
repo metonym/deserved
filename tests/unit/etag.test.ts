@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  isNotModified,
-  makeEtag,
-  notModified,
-  notModifiedSince,
-} from "../../src/handlers";
+import { isNotModified, makeEtag, notModifiedSince } from "../../src/handlers";
 
 describe("etag", () => {
   test("format", () => {
@@ -15,36 +10,40 @@ describe("etag", () => {
   test("If-None-Match", () => {
     const etag = makeEtag(10, 1000);
     expect(
-      notModified(
+      isNotModified(
         new Request("http://x", { headers: { "If-None-Match": etag } }),
         etag,
+        0,
       ),
     ).toBe(true);
     expect(
-      notModified(
+      isNotModified(
         new Request("http://x", { headers: { "If-None-Match": `W/${etag}` } }),
         etag,
+        0,
       ),
     ).toBe(true);
-    expect(notModified(new Request("http://x"), etag)).toBe(false);
+    expect(isNotModified(new Request("http://x"), etag, 0)).toBe(false);
   });
 
   test("If-None-Match matches anywhere in a comma-separated list", () => {
     const etag = makeEtag(10, 1000);
     expect(
-      notModified(
+      isNotModified(
         new Request("http://x", {
           headers: { "If-None-Match": `"other-1", ${etag}, "other-2"` },
         }),
         etag,
+        0,
       ),
     ).toBe(true);
     expect(
-      notModified(
+      isNotModified(
         new Request("http://x", {
           headers: { "If-None-Match": '"other-1", "other-2"' },
         }),
         etag,
+        0,
       ),
     ).toBe(false);
   });

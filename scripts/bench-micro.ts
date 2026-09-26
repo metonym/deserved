@@ -37,7 +37,6 @@ import {
   isNotModified,
   listDir,
   makeEtag,
-  notModified,
   parseRange,
   pickEncoding,
   resolveDirWithRoot,
@@ -192,7 +191,6 @@ group("caching", () => {
   const req = getReq();
   const etaggedReq = etagReq(warmEtag);
   task("makeEtag", () => keep(makeEtag(12_345, 1_700_000_000_000)));
-  task("notModified", () => keep(notModified(etaggedReq, warmEtag)));
   task("isNotModified", () =>
     keep(isNotModified(etaggedReq, warmEtag, 1_700_000_000_000)),
   );

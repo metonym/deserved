@@ -609,10 +609,13 @@ function finish(
 // rawPathname (not the decoded `pathname`) so a percent-encoded request
 // like /my%20docs redirects to /my%20docs/, not an unencoded literal
 // space. reqUrl is only parsed here, lazily, for the query string.
+// Leading slashes collapse to one: `//evil.com/` in a Location header is
+// protocol-relative, i.e. an open redirect to another host.
 function directoryRedirect(rawPathname: string, reqUrl: string): Response {
+  const path = rawPathname.replace(/^\/+/, "/");
   return new Response(null, {
     status: 301,
-    headers: { Location: `${rawPathname}/${new URL(reqUrl).search}` },
+    headers: { Location: `${path}/${new URL(reqUrl).search}` },
   });
 }
 

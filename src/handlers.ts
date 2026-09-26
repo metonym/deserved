@@ -9,6 +9,7 @@ import {
   LIVE_SCRIPT,
   logRequest,
   type Options,
+  SSE_HEADERS,
 } from "./server";
 
 export type ResolvedFile = {
@@ -685,7 +686,11 @@ async function handleDecoded(
   }
 
   if (opts.watch && pathname === EVENTS_PATH && hub) {
-    // HEAD must not consume an SSE slot, so don't use the standard send().
+    // HEAD gets the stream's headers without subscribing a client.
+    if (method === "HEAD") {
+      return send(new Response(null, { headers: SSE_HEADERS }));
+    }
+    // An open-ended stream skips send(): headify() would drop its body.
     const res = hub.subscribe();
     logRequest(method, 200, pathname, opts.quiet);
     return withCors(res, opts);

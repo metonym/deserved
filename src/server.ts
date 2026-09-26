@@ -86,6 +86,12 @@ export function injectLiveReload(html: string): string {
   return html.slice(0, idx) + INJECT + html.slice(idx);
 }
 
+export const SSE_HEADERS = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+};
+
 export function createSseHub() {
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
@@ -120,13 +126,7 @@ export function createSseHub() {
       },
     });
 
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
+    return new Response(stream, { headers: SSE_HEADERS });
   }
 
   function broadcast(data = "reload") {

@@ -69,7 +69,13 @@ function isAddrInUseError(err: unknown): boolean {
 export const LIVE_PATH = "/__live.js";
 export const EVENTS_PATH = "/__events";
 
-export const LIVE_SCRIPT = `(()=>{const e=new EventSource("${EVENTS_PATH}");e.onmessage=(m)=>{if(m.data==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=l.href.split("?")[0];l.href=h+"?t="+Date.now()}}else{location.reload()}};e.onerror=()=>{e.close();setTimeout(()=>location.reload(),1000)}})()`;
+// Once the stream drops (server stopped or restarting), the browser's
+// EventSource retries on its own; the first successful reconnect reloads
+// the page. If the server comes back without --watch, /__events 404s and
+// the source closes for good, so reload once to pick up the new server.
+// A source that never connected (a handler with no hub) stays put, so
+// it can't loop.
+export const LIVE_SCRIPT = `(()=>{let down=false;const e=new EventSource("${EVENTS_PATH}");e.onopen=()=>{if(down)location.reload()};e.onmessage=(m)=>{if(m.data==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=l.href.split("?")[0];l.href=h+"?t="+Date.now()}}else{location.reload()}};e.onerror=()=>{if(down&&e.readyState===2)location.reload();down=true}})()`;
 
 const INJECT = `<script src="${LIVE_PATH}"></script>`;
 
@@ -96,9 +102,8 @@ export function createSseHub() {
   const PING = encoder.encode(": ping\n\n");
 
   // Bun force-closes a connection after ~10s of no traffic, which would
-  // otherwise kill an idle browser tab's SSE stream and trigger its
-  // onerror reload fallback. Keep it warm so it only ever closes when we
-  // close it (broadcast or shutdown).
+  // otherwise drop an idle browser tab's SSE stream and make it reload on
+  // reconnect. Keep it warm so it only ever closes on shutdown.
   const heartbeat = setInterval(() => {
     for (const c of clients) {
       try {
@@ -117,7 +122,8 @@ export function createSseHub() {
       start(c) {
         controller = c;
         clients.add(c);
-        c.enqueue(encoder.encode(": connected\n\n"));
+        // retry: how soon the browser reconnects after a restart.
+        c.enqueue(encoder.encode("retry: 500\n: connected\n\n"));
       },
       cancel() {
         clients.delete(controller);

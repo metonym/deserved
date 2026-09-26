@@ -28,21 +28,86 @@ describe("injectLiveReload", () => {
 });
 
 describe("LIVE_SCRIPT", () => {
+  const OPEN = 1;
+  const CONNECTING = 0;
+  const CLOSED = 2;
+
+  // Runs the client script against stand-ins for the browser globals it
+  // touches, exposing the EventSource it creates.
+  function run() {
+    const reload = mock(() => {});
+    const link = { href: "http://x/style.css?t=1" };
+    class FakeEventSource {
+      static last: FakeEventSource;
+      readyState = CONNECTING;
+      onopen = () => {};
+      onmessage = (_m: { data: string }) => {};
+      onerror = () => {};
+      constructor(readonly url: string) {
+        FakeEventSource.last = this;
+      }
+      open() {
+        this.readyState = OPEN;
+        this.onopen();
+      }
+      error(state: number) {
+        this.readyState = state;
+        this.onerror();
+      }
+    }
+    new Function("EventSource", "location", "document", LIVE_SCRIPT)(
+      FakeEventSource,
+      { reload },
+      { querySelectorAll: () => [link] },
+    );
+    return { source: FakeEventSource.last, reload, link };
+  }
+
+  test("subscribes to the events endpoint without reloading", () => {
+    const { source, reload } = run();
+    expect(source.url).toBe(EVENTS_PATH);
+    source.open();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  test("reloads on a reload message", () => {
+    const { source, reload } = run();
+    source.open();
+    source.onmessage({ data: "reload" });
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
   test("hot-swaps stylesheets on a css message instead of reloading", () => {
-    expect(LIVE_SCRIPT).toContain('m.data==="css"');
-    expect(LIVE_SCRIPT).toContain(
-      "querySelectorAll('link[rel=\"stylesheet\"]')",
-    );
+    const { source, reload, link } = run();
+    source.open();
+    source.onmessage({ data: "css" });
+    expect(reload).not.toHaveBeenCalled();
+    expect(link.href).toMatch(/^http:\/\/x\/style\.css\?t=\d+$/);
+    expect(link.href).not.toBe("http://x/style.css?t=1");
   });
 
-  test("falls back to a full reload for any non-css message", () => {
-    expect(LIVE_SCRIPT).toContain("location.reload()");
+  test("waits out a restart, then reloads once the server is back", () => {
+    const { source, reload } = run();
+    source.open();
+    source.error(CONNECTING);
+    source.error(CONNECTING);
+    expect(reload).not.toHaveBeenCalled();
+    source.open();
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  test("keeps the onerror reconnect-then-reload behavior", () => {
-    expect(LIVE_SCRIPT).toContain(
-      "e.onerror=()=>{e.close();setTimeout(()=>location.reload(),1000)}",
-    );
+  test("reloads if the server comes back without --watch", () => {
+    const { source, reload } = run();
+    source.open();
+    source.error(CONNECTING);
+    source.error(CLOSED);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  test("never reloads when the endpoint was never there", () => {
+    const { source, reload } = run();
+    source.error(CLOSED);
+    expect(reload).not.toHaveBeenCalled();
   });
 });
 

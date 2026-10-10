@@ -87,6 +87,38 @@ describe("e2e range requests", () => {
     }
   });
 
+  // Bun.serve slices a Bun.file body by the request's Range on its own, so
+  // the full-body fallback is only safe if Bun also honors If-Range there
+  // (it didn't before 1.4.3).
+  test("serves the full file when If-Range doesn't match", async () => {
+    const root = fixtureDir("range-if-range");
+    write(root, "data.bin", "0123456789");
+
+    const cli = await startCli(root, ["--no-compress"]);
+    try {
+      const etag = (await fetch(`${cli.base}/data.bin`)).headers.get("ETag");
+      expect(etag).toBeTruthy();
+
+      const matching = await fetch(`${cli.base}/data.bin`, {
+        headers: { Range: "bytes=0-2", "If-Range": etag ?? "" },
+      });
+      expect(matching.status).toBe(206);
+      expect(await matching.text()).toBe("012");
+
+      for (const ifRange of ['"stale"', `W/${etag}`]) {
+        const res = await fetch(`${cli.base}/data.bin`, {
+          headers: { Range: "bytes=0-2", "If-Range": ifRange },
+        });
+        expect(res.status).toBe(200);
+        expect(res.headers.get("Content-Range")).toBeNull();
+        expect(await res.text()).toBe("0123456789");
+      }
+    } finally {
+      cli.stop();
+      removeFixture(root);
+    }
+  });
+
   test("an aborted range read doesn't corrupt a later range on the same file", async () => {
     const root = fixtureDir("range-abort");
     write(root, "data.bin", "0123456789");

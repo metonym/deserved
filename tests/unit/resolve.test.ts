@@ -82,6 +82,25 @@ describe("resolveFileWithRoot containment", () => {
     }
   });
 
+  // Before Bun 1.4.4, realpathSync() split on `\` on Linux and macOS, so
+  // this 404'd, or served a/b.txt when that existed.
+  test.skipIf(process.platform === "win32")(
+    "resolves a file name containing a backslash",
+    async () => {
+      const base = mkdtempSync(join(tmpdir(), "deserved-real-"));
+      mkdirSync(join(base, "a"));
+      writeFileSync(join(base, "a", "b.txt"), "nested");
+      writeFileSync(join(base, "a\\b.txt"), "backslash");
+
+      try {
+        const resolved = resolve(base, "/a\\b.txt");
+        expect(await resolved?.file.text()).toBe("backslash");
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
+
   test("returns null for a path that does not exist", () => {
     const base = mkdtempSync(join(tmpdir(), "deserved-real-"));
     try {

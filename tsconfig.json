@@ -6,6 +6,7 @@
     "moduleResolution": "bundler",
     "types": ["bun"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "verbatimModuleSyntax": true
   },

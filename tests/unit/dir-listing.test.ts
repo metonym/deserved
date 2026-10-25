@@ -40,13 +40,11 @@ describe("listDir", () => {
       const entries = listDir(dir);
 
       expect(entries.some((e) => e.name === ".hidden")).toBe(false);
-      expect(entries.length).toBe(3);
-      expect(entries[0].name).toBe("zdir");
-      expect(entries[0].dir).toBe(true);
-      expect(entries[1].name).toBe("a.txt");
-      expect(entries[1].dir).toBe(false);
-      expect(entries[2].name).toBe("b.txt");
-      expect(entries[2].dir).toBe(false);
+      expect(entries.map((e) => [e.name, e.dir])).toEqual([
+        ["zdir", true],
+        ["a.txt", false],
+        ["b.txt", false],
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

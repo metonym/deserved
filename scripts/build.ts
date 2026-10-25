@@ -26,14 +26,7 @@ if (!result.success) {
   process.exit(1);
 }
 
-const dts = Bun.spawnSync(
-  ["bun", "x", "tsc", "-p", join(root, "tsconfig.build.json")],
-  { cwd: root, stdout: "inherit", stderr: "inherit" },
-);
-
-if (!dts.success) {
-  process.exit(1);
-}
+cpSync(join(root, "types/index.d.ts"), join(out, "index.d.ts"));
 
 for (const extra of ["README.md", "LICENSE"]) {
   const path = join(root, extra);

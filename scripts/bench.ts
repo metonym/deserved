@@ -136,8 +136,9 @@ function parseClockSeconds(value: string | undefined): number | null {
   if (!value) return null;
   const parts = value.split(":").map(Number);
   if (parts.some((n) => !Number.isFinite(n))) return null;
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  const [a = 0, b = 0, c = 0] = parts;
+  if (parts.length === 2) return a * 60 + b;
+  if (parts.length === 3) return a * 3600 + b * 60 + c;
   return null;
 }
 

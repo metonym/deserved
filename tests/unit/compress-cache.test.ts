@@ -234,8 +234,10 @@ describe("single-flight compression", () => {
         const bodies = await Promise.all(
           responses.map(async (res) => new Uint8Array(await res.arrayBuffer())),
         );
-        for (const body of bodies.slice(1)) {
-          expect(body).toEqual(bodies[0]);
+        const [first, ...rest] = bodies;
+        if (!first) throw new Error("expected responses");
+        for (const body of rest) {
+          expect(body).toEqual(first);
         }
 
         // Single-flight: 10 concurrent misses collapse into one compression.

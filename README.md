@@ -22,20 +22,20 @@ bunx deserved dist --spa
 bunx deserved [path] [options]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `-p, --port <n>` | Port (default `3000`, or `$PORT`) |
-| `-H, --host <host>` | Hostname (default `localhost`) |
-| `-s, --spa` | SPA fallback to `index.html` |
-| `-w, --watch` | Live reload via SSE |
-| `-o, --open` | Open the browser |
-| `--cors` | Enable CORS |
-| `--dir`, `--no-dir` | Directory listing (default on) |
-| `--cache`, `--no-cache` | Long-lived, immutable cache headers for assets (default off) |
-| `--compress`, `--no-compress` | zstd/gzip compression (default on) |
-| `-q, --quiet` | Suppress request logs |
-| `-h, --help` | Show help |
-| `-v, --version` | Show version |
+| Flag                          | Description                                                  |
+| ----------------------------- | ------------------------------------------------------------ |
+| `-p, --port <n>`              | Port (default `3000`, or `$PORT`)                            |
+| `-H, --host <host>`           | Hostname (default `localhost`)                               |
+| `-s, --spa`                   | SPA fallback to `index.html`                                 |
+| `-w, --watch`                 | Live reload via SSE                                          |
+| `-o, --open`                  | Open the browser                                             |
+| `--cors`                      | Enable CORS                                                  |
+| `--dir`, `--no-dir`           | Directory listing (default on)                               |
+| `--cache`, `--no-cache`       | Long-lived, immutable cache headers for assets (default off) |
+| `--compress`, `--no-compress` | zstd/gzip compression (default on)                           |
+| `-q, --quiet`                 | Suppress request logs                                        |
+| `-h, --help`                  | Show help                                                    |
+| `-v, --version`               | Show version                                                 |
 
 ## Examples
 

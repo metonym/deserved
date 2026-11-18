@@ -7,3 +7,7 @@ ignorePatterns = ["**/*.md", "**/*.yml", "**/*.yaml", "**/*.html"]
 # ESLint and typescript-eslint recommended rules are on by default.
 [lint]
 maxWarnings = 0
+
+[lint.rules]
+# A bare `catch {}` is how this codebase ignores best-effort failures.
+"no-empty" = ["warn", { allowEmptyCatch = true }]

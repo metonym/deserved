@@ -76,9 +76,7 @@ export function createSseHub() {
     for (const c of clients) {
       try {
         c.close();
-      } catch {
-        // Already closed.
-      }
+      } catch {}
     }
     clients.clear();
   }

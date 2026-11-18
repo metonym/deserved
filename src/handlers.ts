@@ -220,9 +220,7 @@ function statFile(
         kind,
       };
     }
-  } catch {
-    // Gone or unreadable: treat as not found.
-  }
+  } catch {}
   return null;
 }
 
@@ -442,9 +440,7 @@ export function listDir(dir: string): DirEntry[] {
         const st = statSync(join(dir, e.name));
         size = st.size;
         mtimeMs = st.mtimeMs;
-      } catch {
-        // Vanished or unreadable: list it without size and mtime.
-      }
+      } catch {}
     }
     entries.push({ name: e.name, dir: isDir, size, mtimeMs });
   }

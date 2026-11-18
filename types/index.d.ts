@@ -61,5 +61,4 @@ export declare function createHandler(options?: Partial<Options>): Handler;
 
 // A declaration file exports every top-level declaration unless it has an
 // `export {}`, which keeps Handler private.
-// biome-ignore lint/complexity/noUselessEmptyExport: not useless in a .d.ts
 export {};

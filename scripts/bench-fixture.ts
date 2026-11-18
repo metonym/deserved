@@ -42,7 +42,7 @@ function buildVocab(
 }
 
 function pick<T>(rng: Rng, arr: T[]): T {
-  // biome-ignore lint/style/noNonNullAssertion: index is always in range
+  // The index is always in range.
   return arr[Math.floor(rng() * arr.length)]!;
 }
 

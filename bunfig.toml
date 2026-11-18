@@ -1,0 +1,9 @@
+# `bun fmt` and `bun lint` (Bun canary).
+
+[fmt]
+# Markdown, YAML and the demo HTML stay hand-formatted.
+ignorePatterns = ["**/*.md", "**/*.yml", "**/*.yaml", "**/*.html"]
+
+# ESLint and typescript-eslint recommended rules are on by default.
+[lint]
+maxWarnings = 0

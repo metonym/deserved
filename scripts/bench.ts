@@ -535,7 +535,7 @@ async function measureOnce(
 /** Middle element by req/s; for an even count, the lower of the two middles. */
 function medianByReqPerSec(runs: ScenarioResult[]): ScenarioResult {
   const sorted = [...runs].sort((a, b) => a.reqPerSec - b.reqPerSec);
-  // biome-ignore lint/style/noNonNullAssertion: runs is never empty
+  // runs is never empty.
   return sorted[Math.floor((sorted.length - 1) / 2)]!;
 }
 

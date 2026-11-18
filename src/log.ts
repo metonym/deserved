@@ -20,9 +20,9 @@ const c = {
   bold: ansi(1),
 } as const;
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: strip control chars from logs
+// eslint-disable-next-line no-control-regex -- strip control chars from logs
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: cheap pre-check so the common clean-path case skips replace()
+// eslint-disable-next-line no-control-regex -- cheap pre-check so the common clean-path case skips replace()
 const HAS_CONTROL = /[\x00-\x1f\x7f]/;
 
 function sanitizeForLog(s: string): string {

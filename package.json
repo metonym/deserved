@@ -17,10 +17,8 @@
     "bench": "bun scripts/bench.ts",
     "bench:micro": "bun scripts/bench-micro.ts",
     "typecheck": "bun check",
-    "lint": "biome check .",
-    "lint:fix": "biome check --write . --unsafe",
-    "lint:changed": "biome check --changed --since=master --no-errors-on-unmatched .",
-    "lint:fix:changed": "biome check --write --unsafe --changed --since=master --no-errors-on-unmatched .",
+    "lint:all": "bun fmt && bun lint --fix",
+    "lint:changed": "bun fmt --changed && bun lint --changed --fix",
     "test": "bun test tests",
     "test:unit": "bun test tests/unit",
     "test:e2e": "bun test tests/e2e",
@@ -28,7 +26,6 @@
     "demo:spa": "bun src/cli.ts tests/demo --spa --watch --open"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.13",
     "@types/bun": "^1.4.4",
     "ostia": "^0.2.7"
   },

@@ -1,6 +1,6 @@
 {
   "name": "deserved",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A tiny Bun static file server: SPA, live reload, zero dependencies.",
   "license": "MIT",
   "author": "Eric Liu (https://github.com/metonym)",

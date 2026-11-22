@@ -1,6 +1,0 @@
-node_modules/
-package/
-tests/e2e/.tmp/
-tests/unit/.tmp-api/
-.DS_Store
-*.tgz

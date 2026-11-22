@@ -1,11 +1,13 @@
 import { statSync, watch } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { relative, resolve } from "node:path";
+
 import { createHandler } from "./handlers";
 import { classifyBatch, createSseHub, isIgnoredWatchPath } from "./live";
 import { flushLogs, logBanner, logInfo, logReload } from "./log";
 import { DEFAULT_OPTIONS, type Options } from "./options";
 
+/** A running server: where it listens, and `stop()` to close it. */
 export type ServerHandle = {
   port: number;
   hostname: string;
@@ -13,6 +15,7 @@ export type ServerHandle = {
   stop: () => Promise<void>;
 };
 
+/** The root to serve doesn't exist or isn't a directory. */
 export class RootError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -20,6 +23,7 @@ export class RootError extends Error {
   }
 }
 
+/** The server couldn't listen on the host and port. */
 export class BindError extends Error {
   constructor(host: string, port: number, options?: ErrorOptions) {
     super(`could not bind to ${host}:${port}`, options);
@@ -87,7 +91,7 @@ function validateRoot(rootPath: string): void {
   }
 }
 
-export type StartOptions = {
+type StartOptions = {
   // The default port hops to the next free one when taken; an explicit
   // one (the CLI's --port, or any port passed to serve()) never does.
   portExplicit?: boolean;
@@ -107,7 +111,8 @@ export async function startServer(
   const fetch = createHandler({ ...opts, root }, hub);
 
   // Bun.serve misses bind conflicts when hostname is the string "localhost".
-  // A literal loopback IP throws. Bind to 127.0.0.1 so a second instance fails cleanly.
+  // A literal loopback IP throws. Bind to 127.0.0.1 so a second instance
+  // fails cleanly.
   const bindHost = opts.host === "localhost" ? "127.0.0.1" : opts.host;
 
   // Port 0 already means "any free port", so there's nothing to hop from.
@@ -182,6 +187,10 @@ export async function startServer(
   return { port: server.port ?? opts.port, hostname: displayHost, url, stop };
 }
 
+/**
+ * Starts a server for `options.root`, over the defaults; a bind failure
+ * rejects instead of exiting.
+ */
 export async function serve(
   options: Partial<Options> = {},
 ): Promise<ServerHandle> {

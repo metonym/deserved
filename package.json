@@ -1,36 +1,27 @@
 {
   "name": "deserved",
   "version": "0.6.0",
-  "description": "A tiny Bun static file server: SPA, live reload, zero dependencies",
+  "description": "A tiny Bun static file server: SPA, live reload, zero dependencies.",
   "license": "MIT",
+  "author": "Eric Liu (https://github.com/metonym)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/metonym/deserved.git"
+  },
+  "homepage": "https://github.com/metonym/deserved",
+  "bugs": "https://github.com/metonym/deserved/issues",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.ts"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "deserved": "src/cli.ts"
   },
-  "module": "src/index.ts",
-  "exports": {
-    ".": "./src/index.ts"
-  },
-  "scripts": {
-    "start": "bun src/cli.ts",
-    "build": "bun scripts/build.ts",
-    "bench": "bun scripts/bench.ts",
-    "bench:micro": "bun scripts/bench-micro.ts",
-    "typecheck": "bun check",
-    "lint:all": "bun fmt && bun lint --fix",
-    "lint:changed": "bun fmt --changed && bun lint --changed --fix",
-    "test": "bun test tests",
-    "test:unit": "bun test tests/unit",
-    "test:e2e": "bun test tests/e2e",
-    "demo": "bun src/cli.ts tests/demo --watch --open",
-    "demo:spa": "bun src/cli.ts tests/demo --spa --watch --open"
-  },
-  "devDependencies": {
-    "@types/bun": "^1.4.4",
-    "ostia": "^0.2.7"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/metonym/deserved"
+  "engines": {
+    "bun": ">=1.4.0"
   }
 }

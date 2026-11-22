@@ -1,6 +1,6 @@
 # deserved
 
-Tiny (8.7 kB gzip), zero-dep Bun static server.
+A tiny Bun static file server: SPA, live reload, zero dependencies.
 
 ```bash
 bunx deserved .
@@ -51,9 +51,9 @@ bunx deserved dist --watch
 PORT=8080 bunx deserved dist
 ```
 
-The default port (`3000`, or `$PORT` if set) hops to the next free port (up
-to 10 tries) if it's taken; an explicit `--port` never does — it fails
-cleanly instead.
+The default port (`3000`, or `$PORT` if set) hops to the next free port
+(up to 10 tries) if it's taken; an explicit `--port` never does:
+it fails cleanly instead.
 
 ## Programmatic use
 
@@ -65,17 +65,21 @@ console.log(server.url);
 await server.stop();
 ```
 
-`serve()` accepts a `Partial<Options>`, merged over the same defaults as the
-CLI (`DEFAULT_OPTIONS`). It resolves to `{ port, hostname, url, stop() }`;
-`stop()` closes the server and, if `watch: true` was passed, the file
-watcher. Unlike the CLI, a bind failure (e.g. a port already in use) rejects
-the promise instead of exiting the process. A `port` passed to `serve()` is
-always treated as explicit — it never hops to another port. `quiet: true`
-silences all output, including the startup banner.
+`serve()` accepts a `Partial<Options>`,
+merged over the same defaults as the CLI (`DEFAULT_OPTIONS`).
+It resolves to `{ port, hostname, url, stop() }`;
+`stop()` closes the server and, if `watch: true` was passed,
+the file watcher.
+Unlike the CLI, a bind failure (a port already in use) rejects the
+promise instead of exiting the process.
+A `port` passed to `serve()` is always treated as explicit:
+it never hops to another port.
+`quiet: true` silences all output, including the startup banner.
 
-To mount the file server inside your own `Bun.serve()`, use the request
-handler directly (it takes the same `Partial<Options>`; `watch` needs
-`serve()`, which owns the file watcher):
+To mount the file server inside your own `Bun.serve()`,
+use the request handler directly
+(it takes the same `Partial<Options>`; `watch` needs `serve()`, which
+owns the file watcher):
 
 ```ts
 import { createHandler } from "deserved";
@@ -91,10 +95,13 @@ Bun.serve({ fetch: createHandler({ root: "dist", spa: true, quiet: true }) });
 - Range requests (`206`) for media
 - SPA mode (HTML Accept only; assets still 404)
 - Custom `404.html` for browser requests
-- Optional live reload (`--watch`) via Server-Sent Events; tabs reconnect and reload after a server restart
-- CSS-only changes hot-swap stylesheets in place instead of a full page reload
+- Optional live reload (`--watch`) via Server-Sent Events;
+  tabs reconnect and reload after a server restart
+- CSS-only changes hot-swap stylesheets in place instead of a full page
+  reload
 - zstd or gzip compression, negotiated per request
-- Cache headers off by default (`no-cache`); opt in per-run with `--cache` for long-lived, immutable asset caching
+- Cache headers off by default (`no-cache`);
+  opt in per-run with `--cache` for long-lived, immutable asset caching
 - Directory listings (disable with `--no-dir`)
 - Dotfiles (`.env`, `.git/`) are never served, except `/.well-known/`
 - Symlinks can't escape the served root

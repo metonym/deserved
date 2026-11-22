@@ -1,3 +1,4 @@
+/** The server's settings; the CLI's flags set the same keys. */
 export type Options = {
   root: string;
   port: number;
@@ -12,6 +13,7 @@ export type Options = {
   quiet: boolean;
 };
 
+/** The settings `serve()` and the CLI start from. */
 export const DEFAULT_OPTIONS = {
   root: ".",
   port: 3000,

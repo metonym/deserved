@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
+
 import { version as VERSION } from "../package.json";
 import { DEFAULT_OPTIONS, type Options } from "./options";
 import { BindError, RootError, startServer } from "./server";
@@ -38,7 +39,7 @@ function printHelp() {
 `);
 }
 
-export type CliOptions = Options & { portExplicit: boolean };
+type CliOptions = Options & { portExplicit: boolean };
 
 type BooleanOption = {
   [K in keyof Options]: Options[K] extends boolean ? K : never;

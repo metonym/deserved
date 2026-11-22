@@ -1,6 +1,8 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, resolve, sep } from "node:path";
+
 import { escapeHTML } from "bun";
+
 import {
   EVENTS_PATH,
   type Hub,
@@ -12,7 +14,7 @@ import {
 import { logRequest } from "./log";
 import { DEFAULT_OPTIONS, type Options } from "./options";
 
-export type ResolvedFile = {
+type ResolvedFile = {
   path: string;
   file: Bun.BunFile;
   size: number;
@@ -20,7 +22,7 @@ export type ResolvedFile = {
   kind: "file" | "html-ext" | "dir-index";
 };
 
-export type Handler = {
+type Handler = {
   (req: Request): Promise<Response>;
   invalidateResolutionCache(): void;
   invalidateCompressedCache(): void;
@@ -139,8 +141,9 @@ export function acceptsHtml(req: Request): boolean {
 
 export type CompressionEncoding = "zstd" | "gzip";
 
-// zstd compresses faster and smaller than gzip, but not every client speaks
-// it yet (e.g. Safari), so negotiate rather than replacing gzip outright.
+// zstd compresses faster and smaller than gzip, but not every client
+// speaks it yet (e.g. Safari), so negotiate rather than replacing gzip
+// outright.
 export function pickEncoding(req: Request): CompressionEncoding | null {
   const accept = req.headers.get("Accept-Encoding");
   if (!accept) return null;
@@ -257,8 +260,8 @@ type Cached<T> = { value: T | null; at: number };
 // - Non-watch: a hit re-stats the winning candidate every time, so content
 //   edits are visible on the very next request. Only *which file wins* (or
 //   whether one exists at all) can go stale, bounded by RESOLUTION_TTL_MS.
-// - --watch: startServer's fs watcher already calls invalidateResolutionCache()
-//   on every change, clearing this map, so a hit within that window is
+// - --watch: startServer's fs watcher already calls
+//   invalidateResolutionCache() on every change, clearing this map, so a hit within that window is
 //   already known-fresh -- re-stating it would only reconfirm what the
 //   watcher guarantees. A hit returns the cached ResolvedFile (including
 //   size/mtimeMs) directly, no statSync. This is the dominant cost on the
@@ -266,8 +269,8 @@ type Cached<T> = { value: T | null; at: number };
 //   does in non-watch mode. staleness is instead bounded by the watcher's
 //   event delivery (tens of ms), exactly as file existence already is.
 //
-// If the cached candidate no longer stats as a file (deleted, replaced by a
-// dir, symlink now escapes root), resolution falls through and re-probes
+// If the cached candidate no longer stats as a file (deleted, replaced by
+// a dir, symlink now escapes root), resolution falls through and re-probes
 // for real instead of trusting the stale entry -- this only applies to the
 // non-watch re-stat path; a watch-mode hit is trusted outright.
 //
@@ -1077,7 +1080,7 @@ export function parseRange(
   return { start, end };
 }
 
-export function withCors(res: Response, opts: Options): Response {
+function withCors(res: Response, opts: Options): Response {
   if (!opts.cors) return res;
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Headers", "*");

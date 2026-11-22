@@ -100,7 +100,8 @@ export function parseArgs(
       continue;
     }
 
-    // `--port=8080` carries its value inline; `-p 8080` takes the next arg.
+    // Only the long form carries its value inline (`--port=8080`);
+    // otherwise the value is the next arg (`-p 8080`).
     const eq = a.startsWith("--") ? a.indexOf("=") : -1;
     const flag = eq === -1 ? a : a.slice(0, eq);
     const key = VALUE_FLAGS.get(flag);

@@ -1,5 +1,5 @@
-// Plain text when piped (CI logs, `| tee`) or when NO_COLOR is set
-// (https://no-color.org).
+// spec: https://no-color.org (NO_COLOR); piped output (CI logs, `| tee`)
+// is plain text too.
 export function shouldColor(
   isTTY: boolean | undefined,
   env: Record<string, string | undefined>,
@@ -35,10 +35,9 @@ const ICON_ERR = `${c.red}✗${c.reset}`;
 const DIM = c.dim;
 const RESET = c.reset;
 
-// Collapses many synchronous per-request writes into one per tick: a
-// console.log/write per request costs a syscall each, which adds up under
-// load. Lines queue here and flush once, at the end of the current
-// microtask queue.
+// Lines queue here and flush once per tick, at the end of the current
+// microtask queue, because a console.log/write per request costs a syscall
+// each, which adds up under load.
 let pendingLines: string[] = [];
 
 function scheduleFlush(): void {

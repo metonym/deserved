@@ -175,8 +175,8 @@ export function shouldSpaFallback(pathname: string): boolean {
 
 const WELL_KNOWN = "/.well-known";
 
-// Dotfiles (.env, .git/) stay private even when serving a project root;
-// /.well-known/ is the one dot-directory that's meant to be public.
+// security: dotfiles (.env, .git/) stay private even when serving a
+// project root; /.well-known/ is the one dot-directory meant to be public.
 export function isHiddenPath(pathname: string): boolean {
   const from =
     pathname.startsWith(WELL_KNOWN) &&
@@ -245,9 +245,9 @@ function markRecent<T>(map: Map<string, T>, key: string, entry: T): void {
   map.set(key, entry);
 }
 
-// Bounds staleness in non-watch mode: a newly created or deleted candidate
-// (e.g. adding about.html for a pathname previously cached as a 404)
-// becomes visible within this window.
+// Without --watch nothing reports a newly created or deleted candidate
+// (e.g. adding about.html for a pathname previously cached as a 404),
+// so this window bounds how long it stays unseen.
 export const RESOLUTION_TTL_MS = 500;
 
 type Cached<T> = { value: T | null; at: number };
@@ -285,9 +285,8 @@ function createResolutionCache(
   const files = new Map<string, Cached<ResolvedFile>>();
   const dirs = new Map<string, Cached<string>>();
 
-  // `revalidate` returns the value to serve for a fresh cached winner, or
-  // null if it no longer holds (deleted or changed kind), forcing a
-  // re-probe.
+  // A fresh cached winner still goes through `revalidate`, since it can be
+  // deleted or change kind; its null forces a re-probe.
   function lookup<T>(
     map: Map<string, Cached<T>>,
     pathname: string,
@@ -820,9 +819,9 @@ function createCompressionCache() {
     }
   }
 
-  // Keyed by (key, encoding, size, mtimeMs): pick a distinct key when one
-  // path can yield different bytes, as watch-injected HTML does. Concurrent
-  // misses for one entry share one compression.
+  // Keyed by (key, encoding, size, mtimeMs), so a caller must pick a
+  // distinct key when one path can yield different bytes, as watch-injected
+  // HTML does. Concurrent misses for one entry share one compression.
   const getCompressed: GetCompressed = async (resolved, encoding, loadRaw) => {
     const cacheKey = `${resolved.key}:${encoding}`;
     const cached = cache.get(cacheKey);
@@ -1013,9 +1012,10 @@ function httpDate(mtimeMs: number): string {
   return lastHttpDate;
 }
 
-// Plain object, not Headers: `new Headers()` + 5 `set()` calls costs
-// ~205ns vs ~5ns for an object literal, and `new Response(..., {headers})`
-// accepts either. Response still builds a real Headers instance from it.
+// perf: a plain object, not Headers: `new Headers()` + 5 `set()` calls
+// costs ~205ns vs ~5ns for an object literal, and
+// `new Response(..., {headers})` accepts either. Response still builds a
+// real Headers instance from it.
 export function baseHeaders(
   etag: string,
   opts: Options,

@@ -794,13 +794,8 @@ type PendingCompression = {
   promise: Promise<Blob | null>;
 };
 
-/**
- * Compressed-output cache scoped to one handler instance -- like
- * createResolutionCache above, this keeps the (potentially large)
- * compressed byte buffers it retains reclaimable as soon as the handler
- * itself is no longer referenced, instead of pinning them for the life of
- * the process the way a module-level cache would.
- */
+// Scoped to one handler, so its buffers are freed with the handler, where
+// a module-level cache would pin them for the life of the process.
 function createCompressionCache() {
   const cache = new Map<string, CompressedEntry>();
   let bytes = 0;
@@ -825,13 +820,9 @@ function createCompressionCache() {
     }
   }
 
-  /**
-   * Compressed-output cache keyed by (key, encoding, size, mtimeMs). Pick a
-   * distinct key when the same path can yield different bytes, like
-   * watch-injected HTML. loadRaw runs on miss. Concurrent misses for the
-   * same (key, encoding, version) single-flight onto one in-flight
-   * compression.
-   */
+  // Keyed by (key, encoding, size, mtimeMs): pick a distinct key when one
+  // path can yield different bytes, as watch-injected HTML does. Concurrent
+  // misses for one entry share one compression.
   const getCompressed: GetCompressed = async (resolved, encoding, loadRaw) => {
     const cacheKey = `${resolved.key}:${encoding}`;
     const cached = cache.get(cacheKey);

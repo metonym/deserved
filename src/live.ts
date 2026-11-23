@@ -7,7 +7,7 @@ export const EVENTS_PATH = "/__events";
 // the source closes for good, so reload once to pick up the new server.
 // A source that never connected (a handler with no hub) stays put, so
 // it can't loop.
-export const LIVE_SCRIPT = `(()=>{let down=false;const e=new EventSource("${EVENTS_PATH}");e.onopen=()=>{if(down)location.reload()};e.onmessage=(m)=>{if(m.data==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=l.href.split("?")[0];l.href=h+"?t="+Date.now()}}else{location.reload()}};e.onerror=()=>{if(down&&e.readyState===2)location.reload();down=true}})()`;
+export const LIVE_SCRIPT: string = `(()=>{let down=false;const e=new EventSource("${EVENTS_PATH}");e.onopen=()=>{if(down)location.reload()};e.onmessage=(m)=>{if(m.data==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=l.href.split("?")[0];l.href=h+"?t="+Date.now()}}else{location.reload()}};e.onerror=()=>{if(down&&e.readyState===2)location.reload();down=true}})()`;
 
 const INJECT = `<script src="${LIVE_PATH}"></script>`;
 
@@ -23,7 +23,11 @@ export const SSE_HEADERS = {
   Connection: "keep-alive",
 };
 
-export function createSseHub() {
+export function createSseHub(): {
+  subscribe: () => Response;
+  broadcast: (data?: string) => void;
+  close: () => void;
+} {
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
   const PING = encoder.encode(": ping\n\n");
@@ -60,7 +64,7 @@ export function createSseHub() {
     return new Response(stream, { headers: SSE_HEADERS });
   }
 
-  function broadcast(data = "reload") {
+  function broadcast(data = "reload"): void {
     const payload = encoder.encode(`data: ${data}\n\n`);
     for (const c of clients) {
       try {
@@ -71,7 +75,7 @@ export function createSseHub() {
     }
   }
 
-  function close() {
+  function close(): void {
     clearInterval(heartbeat);
     for (const c of clients) {
       try {

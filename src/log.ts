@@ -56,7 +56,7 @@ export function logRequest(
   status: number,
   path: string,
   quiet: boolean,
-) {
+): void {
   if (quiet) return;
   const icon = status < 300 ? ICON_OK : status < 400 ? ICON_REDIRECT : ICON_ERR;
   pendingLines.push(
@@ -65,7 +65,7 @@ export function logRequest(
   scheduleFlush();
 }
 
-export function logInfo(msg: string, quiet = false) {
+export function logInfo(msg: string, quiet = false): void {
   if (quiet) return;
   console.log(`${c.cyan}│${c.reset} ${msg}`);
 }
@@ -75,7 +75,7 @@ export function logBanner(
   root: string,
   flags: string[],
   networkUrl?: string,
-) {
+): void {
   console.log();
   console.log(
     `  ${c.bold}deserved${c.reset} ${c.dim}serving${c.reset} ${root}`,
@@ -90,7 +90,7 @@ export function logBanner(
   console.log();
 }
 
-export function logReload(quiet: boolean, kind: "css" | "reload") {
+export function logReload(quiet: boolean, kind: "css" | "reload"): void {
   if (quiet) return;
   console.log(`${c.yellow}*${c.reset} ${kind}`);
 }

@@ -761,7 +761,7 @@ type CompressedEntry = {
 // and every touch (read or write) re-inserts its key, so the front of the
 // map is always the least-recently-used entry -- evicting from there
 // gives LRU behavior without a separate linked list.
-export const COMPRESSED_CACHE_BYTE_BUDGET = 64 * 1024 * 1024;
+export const COMPRESSED_CACHE_BYTE_BUDGET: number = 64 * 1024 * 1024;
 
 // Bun 1.4's CompressionStream is native, so gzip runs off the main thread
 // the same way Bun.zstdCompress does.

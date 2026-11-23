@@ -14,7 +14,7 @@ export type Options = {
 };
 
 /** The settings `serve()` and the CLI start from. */
-export const DEFAULT_OPTIONS = {
+export const DEFAULT_OPTIONS: Options = {
   root: ".",
   port: 3000,
   host: "localhost",
@@ -26,4 +26,4 @@ export const DEFAULT_OPTIONS = {
   cache: false,
   compress: true,
   quiet: false,
-} satisfies Options;
+};

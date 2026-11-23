@@ -84,6 +84,10 @@ export function createSseHub() {
   return { subscribe, broadcast, close };
 }
 
+/**
+ * The live-reload hub `serve` creates under `watch`, which a handler
+ * streams change events from.
+ */
 export type Hub = ReturnType<typeof createSseHub>;
 
 export function isIgnoredWatchPath(filename: string): boolean {

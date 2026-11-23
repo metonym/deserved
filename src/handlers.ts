@@ -22,7 +22,11 @@ type ResolvedFile = {
   kind: "file" | "html-ext" | "dir-index";
 };
 
-type Handler = {
+/**
+ * The request handler {@link createHandler} returns: a `fetch` for
+ * `Bun.serve`, with its caches' sizes and a way to clear each.
+ */
+export type Handler = {
   (req: Request): Promise<Response>;
   invalidateResolutionCache(): void;
   invalidateCompressedCache(): void;

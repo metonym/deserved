@@ -20,10 +20,10 @@ const c = {
   bold: ansi(1),
 } as const;
 
-// eslint-disable-next-line no-control-regex -- strip control chars from logs
-const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
-// eslint-disable-next-line no-control-regex -- cheap pre-check so the common clean-path case skips replace()
-const HAS_CONTROL = /[\x00-\x1f\x7f]/;
+// C0 and C1 controls, since either can start a terminal escape (ESC, CSI).
+const CONTROL_CHARS = /\p{Cc}/gu;
+// A pre-check, so a clean path, the common case, skips the replace.
+const HAS_CONTROL = /\p{Cc}/u;
 
 function sanitizeForLog(s: string): string {
   return HAS_CONTROL.test(s) ? s.replace(CONTROL_CHARS, "") : s;

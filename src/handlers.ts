@@ -594,16 +594,17 @@ export function createHandler(
       const res = new Response("Internal Server Error", { status: 500 });
       return finish(method, rawPathname, opts, res);
     }
-  } as Handler;
-
-  handle.invalidateResolutionCache = () => {
-    resolution.invalidate();
-    ctx.notFound = null;
   };
-  handle.invalidateCompressedCache = compression.invalidate;
-  handle.resolutionCacheSize = resolution.size;
-  handle.compressedCacheBytes = compression.bytes;
-  return handle;
+
+  return Object.assign(handle, {
+    invalidateResolutionCache: () => {
+      resolution.invalidate();
+      ctx.notFound = null;
+    },
+    invalidateCompressedCache: compression.invalidate,
+    resolutionCacheSize: resolution.size,
+    compressedCacheBytes: compression.bytes,
+  });
 }
 
 function finish(

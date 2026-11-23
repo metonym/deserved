@@ -149,7 +149,16 @@ function fail(msg: string): never {
 if (import.meta.main) {
   const opts = parseArgs(process.argv);
 
-  let handle: Awaited<ReturnType<typeof startServer>>;
+  // Registered before the server starts, so a signal sent once the banner
+  // prints, while `--watch` is still setting up, still shuts it down.
+  let handle: Awaited<ReturnType<typeof startServer>> | undefined;
+  const shutdown = async () => {
+    await handle?.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
   try {
     handle = await startServer(opts, { portExplicit: opts.portExplicit });
   } catch (err) {
@@ -167,11 +176,4 @@ if (import.meta.main) {
     }
     throw err;
   }
-
-  const shutdown = async () => {
-    await handle.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 }

@@ -97,8 +97,8 @@ Bun.serve({ fetch: createHandler({ root: "dist", spa: true, quiet: true }) });
 - Custom `404.html` for browser requests
 - Optional live reload (`--watch`) via Server-Sent Events;
   tabs reconnect and reload after a server restart
-- CSS-only changes hot-swap stylesheets in place instead of a full page
-  reload
+- CSS-only changes hot-swap stylesheets in place instead of a full
+  page reload
 - zstd or gzip compression, negotiated per request
 - Cache headers off by default (`no-cache`);
   opt in per-run with `--cache` for long-lived, immutable asset caching

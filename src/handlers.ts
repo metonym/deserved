@@ -146,8 +146,8 @@ export function acceptsHtml(req: Request): boolean {
 export type CompressionEncoding = "zstd" | "gzip";
 
 // zstd compresses faster and smaller than gzip, but not every client
-// speaks it yet (e.g. Safari), so negotiate rather than replacing gzip
-// outright.
+// speaks it yet (e.g. Safari), so negotiate rather than replacing
+// gzip outright.
 export function pickEncoding(req: Request): CompressionEncoding | null {
   const accept = req.headers.get("Accept-Encoding");
   if (!accept) return null;

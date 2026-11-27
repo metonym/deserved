@@ -119,7 +119,7 @@ export function parseArgs(
       continue;
     }
 
-    if (a.startsWith("-")) fail(`Unknown option: ${a}`);
+    if (a.startsWith("-")) fail(`Unknown option: ${a}`, nearest(flag));
     if (root !== undefined) fail(`Unexpected argument: ${a}`);
     root = a;
   }
@@ -140,10 +140,61 @@ function parsePort(value: string, shown: string): number {
   return n;
 }
 
-function fail(msg: string): never {
-  console.error(`Error: ${msg}`);
-  console.error("Run deserved --help.");
-  process.exit(1);
+// Long options only, since every short one is one edit from another. A
+// distance of a third of the name keeps the guess to a typo (`--hlep`),
+// not a different word that happens to be short.
+function nearest(flag: string): string | undefined {
+  const known = [
+    ...BOOLEAN_FLAGS.keys(),
+    ...VALUE_FLAGS.keys(),
+    "--help",
+    "--version",
+  ].filter((k) => k.startsWith("--"));
+  let best: string | undefined;
+  let bestDistance = Infinity;
+  for (const k of known) {
+    const d = distance(flag, k);
+    if (d <= Math.max(1, Math.floor(k.length / 3)) && d < bestDistance) {
+      best = k;
+      bestDistance = d;
+    }
+  }
+  return best;
+}
+
+function distance(a: string, b: string): number {
+  const w = b.length + 1;
+  const d = new Int32Array((a.length + 1) * w);
+  const at = (i: number, j: number): number => d[i * w + j] ?? 0;
+  for (let i = 0; i <= a.length; i++) d[i * w] = i;
+  for (let j = 0; j <= b.length; j++) d[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(
+        at(i - 1, j) + 1,
+        at(i, j - 1) + 1,
+        at(i - 1, j - 1) + cost,
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        v = Math.min(v, at(i - 2, j - 2) + 1);
+      }
+      d[i * w + j] = v;
+    }
+  }
+  return at(a.length, b.length);
+}
+
+// A usage error exits 2. A near miss names the option meant, on one line;
+// otherwise a second line points to --help.
+function fail(msg: string, suggestion?: string): never {
+  if (suggestion) {
+    console.error(`Error: ${msg} (did you mean ${suggestion}?)`);
+  } else {
+    console.error(`Error: ${msg}`);
+    console.error("Run deserved --help.");
+  }
+  process.exit(2);
 }
 
 if (import.meta.main) {

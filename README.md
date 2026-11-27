@@ -55,6 +55,16 @@ The default port (`3000`, or `$PORT` if set) hops to the next free port
 (up to 10 tries) if it's taken; an explicit `--port` never does:
 it fails cleanly instead.
 
+## Exit codes
+
+- `0`: `--help`, `--version`, or a stop by `SIGINT` or `SIGTERM`.
+- `1`: the server couldn't start: the path isn't a directory,
+  or the port is taken.
+- `2`: called wrong: an unknown option, a missing or invalid value,
+  a second path.
+  A mistyped option names the real
+  one: `Unknown option: --hlep (did you mean --help?)`.
+
 ## Programmatic use
 
 ```ts

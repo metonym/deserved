@@ -57,7 +57,10 @@ it fails cleanly instead.
 
 ## Exit codes
 
-- `0`: `--help`, `--version`, or a stop by `SIGINT` or `SIGTERM`.
+- `0`: `--help` or `--version`.
+- `130`: stopped by Ctrl-C (`SIGINT`), once the server has closed;
+  `143` for `SIGTERM`.
+  A second Ctrl-C stops it at once.
 - `1`: the server couldn't start: the path isn't a directory,
   or the port is taken.
 - `2`: called wrong: an unknown option, a missing or invalid value,
@@ -115,4 +118,5 @@ Bun.serve({ fetch: createHandler({ root: "dist", spa: true, quiet: true }) });
 - Directory listings (disable with `--no-dir`)
 - Dotfiles (`.env`, `.git/`) are never served, except `/.well-known/`
 - Symlinks can't escape the served root
-- Colored request logs (plain when piped or with `NO_COLOR`)
+- Colored request logs
+  (plain when piped, with `NO_COLOR`, or under a coding agent)

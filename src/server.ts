@@ -3,9 +3,9 @@ import { networkInterfaces } from "node:os";
 import { relative, resolve } from "node:path";
 
 import { createHandler } from "./handlers";
-import { classifyBatch, createSseHub, isIgnoredWatchPath } from "./live";
-import { flushLogs, logBanner, logInfo, logReload } from "./log";
+import { flushLogs, logBanner, logReload, logStopped } from "./log";
 import { DEFAULT_OPTIONS, type Options } from "./options";
+import { classifyBatch, createSseHub, isIgnoredWatchPath } from "./reload";
 
 /** A running server: where it listens, and `stop()` to close it. */
 export type ServerHandle = {
@@ -95,8 +95,9 @@ type StartOptions = {
   // The default port hops to the next free one when taken; an explicit
   // one (the CLI's --port, or any port passed to serve()) never does.
   portExplicit?: boolean;
-  // The CLI always prints the banner (-q only silences request logs);
-  // serve() skips it when quiet so embedding stays silent.
+  // The CLI always prints the ready line and the stop record (-q only
+  // silences request logs); serve() skips them when quiet so embedding
+  // stays silent.
   banner?: boolean;
 };
 
@@ -104,6 +105,7 @@ export async function startServer(
   opts: Options,
   { portExplicit = false, banner = true }: StartOptions = {},
 ): Promise<ServerHandle> {
+  const started = performance.now();
   const root = resolve(opts.root);
   validateRoot(root);
 
@@ -120,6 +122,7 @@ export async function startServer(
     !portExplicit && opts.port !== 0 ? MAX_PORT_FALLBACK_ATTEMPTS : 0;
 
   let server: ReturnType<typeof Bun.serve> | undefined;
+  let hops = 0;
   for (let hop = 0; !server; hop++) {
     const port = opts.port + hop;
     try {
@@ -130,7 +133,7 @@ export async function startServer(
       }
       continue;
     }
-    if (hop > 0) logInfo(`port ${opts.port} in use, using ${port}`, opts.quiet);
+    hops = hop;
   }
 
   const isWildcardHost = opts.host === "0.0.0.0" || opts.host === "::";
@@ -146,10 +149,6 @@ export async function startServer(
   if (!opts.dir) flags.push("--no-dir");
   if (!opts.compress) flags.push("--no-compress");
   if (opts.cache) flags.push("--cache");
-
-  if (banner) {
-    logBanner(url, relative(process.cwd(), root) || ".", flags, networkUrl);
-  }
 
   let watcher: ReturnType<typeof watch> | undefined;
   if (opts.watch && hub) {
@@ -170,8 +169,20 @@ export async function startServer(
         hub.broadcast(kind);
       }, 80);
     });
+  }
 
-    logInfo("watching for changes", opts.quiet);
+  // Once the watcher runs too, so a change made after the line shows
+  // reloads the page.
+  const ready = performance.now();
+  if (banner) {
+    logBanner({
+      url,
+      root: relative(process.cwd(), root) || ".",
+      flags,
+      tookMs: ready - started,
+      networkUrl,
+      taken: hops > 0 ? opts.port : undefined,
+    });
   }
 
   const stop = async () => {
@@ -179,7 +190,7 @@ export async function startServer(
     hub?.close();
     await server.stop();
     flushLogs();
-    logInfo("server stopped", opts.quiet);
+    if (banner) logStopped(performance.now() - ready);
   };
 
   if (opts.open) openBrowser(url);

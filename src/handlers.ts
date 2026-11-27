@@ -3,6 +3,8 @@ import { extname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { escapeHTML } from "bun";
 
+import { logRequest } from "./log";
+import { DEFAULT_OPTIONS, type Options } from "./options";
 import {
   EVENTS_PATH,
   type Hub,
@@ -10,9 +12,7 @@ import {
   LIVE_PATH,
   LIVE_SCRIPT,
   SSE_HEADERS,
-} from "./live";
-import { logRequest } from "./log";
-import { DEFAULT_OPTIONS, type Options } from "./options";
+} from "./reload";
 
 type ResolvedFile = {
   path: string;

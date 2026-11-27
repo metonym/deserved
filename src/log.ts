@@ -1,24 +1,51 @@
-// spec: https://no-color.org (NO_COLOR); piped output (CI logs, `| tee`)
-// is plain text too.
-export function shouldColor(
-  isTTY: boolean | undefined,
-  env: Record<string, string | undefined>,
-): boolean {
-  return isTTY === true && !env.NO_COLOR;
+import { isAgent } from "./agent";
+import {
+  ASCII_GLYPHS,
+  formatDuration,
+  type Look,
+  readyLines,
+  UNICODE_GLYPHS,
+  wantsAscii,
+  wantsRedraw,
+} from "./live";
+import {
+  closingLine,
+  createPaint,
+  MEASURE,
+  PLAIN,
+  SEPARATOR,
+  wantsColor,
+} from "./terminal";
+
+type Env = Readonly<Record<string, string | undefined>>;
+
+// Color only for a person at a terminal: piped output (CI logs, `| tee`),
+// NO_COLOR (no-color.org), TERM=dumb and a coding agent all get plain
+// text, and FORCE_COLOR colors a pipe.
+function lookFor(
+  terminal: boolean,
+  env: Env,
+  columns: number | undefined,
+): Look {
+  return {
+    paint: wantsColor(undefined, terminal, env, isAgent(env))
+      ? createPaint()
+      : PLAIN,
+    glyphs: wantsAscii(env) ? ASCII_GLYPHS : UNICODE_GLYPHS,
+    columns: columns || MEASURE,
+  };
 }
 
-const useColor = shouldColor(process.stdout.isTTY, process.env);
-const ansi = (code: number) => (useColor ? `\x1b[${code}m` : "");
+// invariant: the one read of the environment, for NO_COLOR, FORCE_COLOR,
+// TERM, the locale and the coding agent's variables.
+const env = process.env;
+const terminal = process.stdout.isTTY === true;
+const look = lookFor(terminal, env, process.stdout.columns);
 
-const c = {
-  reset: ansi(0),
-  dim: ansi(2),
-  green: ansi(32),
-  yellow: ansi(33),
-  red: ansi(31),
-  cyan: ansi(36),
-  bold: ansi(1),
-} as const;
+// Only on a terminal a person reads does it write the escape code that
+// erases the ^C a terminal echoes: an agent's and TERM=dumb get none.
+export const erasesEcho: boolean = wantsRedraw(terminal, env, isAgent(env));
+const { paint, glyphs } = look;
 
 // C0 and C1 controls, since either can start a terminal escape (ESC, CSI).
 const CONTROL_CHARS = /\p{Cc}/gu;
@@ -29,11 +56,9 @@ function sanitizeForLog(s: string): string {
   return HAS_CONTROL.test(s) ? s.replace(CONTROL_CHARS, "") : s;
 }
 
-const ICON_OK = `${c.green}✓${c.reset}`;
-const ICON_REDIRECT = `${c.yellow}○${c.reset}`;
-const ICON_ERR = `${c.red}✗${c.reset}`;
-const DIM = c.dim;
-const RESET = c.reset;
+const ICON_OK = paint.good(glyphs.done);
+const ICON_REDIRECT = paint.warn(glyphs.pending);
+const ICON_ERR = paint.bad(glyphs.failed);
 
 // Lines queue here and flush once per tick, at the end of the current
 // microtask queue, because a console.log/write per request costs a syscall
@@ -60,37 +85,47 @@ export function logRequest(
   if (quiet) return;
   const icon = status < 300 ? ICON_OK : status < 400 ? ICON_REDIRECT : ICON_ERR;
   pendingLines.push(
-    `${icon} ${DIM}${method}${RESET} ${status} ${sanitizeForLog(path)}`,
+    `${icon} ${paint.dim(method)} ${status} ${sanitizeForLog(path)}`,
   );
   scheduleFlush();
 }
 
-export function logInfo(msg: string, quiet = false): void {
-  if (quiet) return;
-  console.log(`${c.cyan}│${c.reset} ${msg}`);
+type Banner = {
+  url: string;
+  root: string;
+  flags: readonly string[];
+  tookMs: number;
+  networkUrl?: string | undefined;
+  /** The default port, when it was taken and the server hopped past it. */
+  taken?: number | undefined;
+};
+
+// The address first, so it reads and copies whole; what's served and how
+// under it, dim, since a person reads it once.
+function bannerLines(banner: Banner, shown: Look = look): string[] {
+  const { paint: p } = shown;
+  const served = [`serving ${banner.root}`, ...banner.flags].join(" ");
+  return [
+    ...readyLines(shown, { address: banner.url, tookMs: banner.tookMs }),
+    `  ${p.dim(banner.taken === undefined ? served : `${served}${SEPARATOR}port ${banner.taken} was taken`)}`,
+    ...(banner.networkUrl === undefined
+      ? []
+      : [`  ${p.dim("on your network at")} ${p.bold(banner.networkUrl)}`]),
+  ];
 }
 
-export function logBanner(
-  url: string,
-  root: string,
-  flags: string[],
-  networkUrl?: string,
-): void {
-  console.log();
+export function logBanner(banner: Banner): void {
+  console.log(bannerLines(banner).join("\n"));
+}
+
+// A stopped server leaves a record, so the scrollback says it ended.
+export function logStopped(upMs: number): void {
   console.log(
-    `  ${c.bold}deserved${c.reset} ${c.dim}serving${c.reset} ${root}`,
+    closingLine(paint, "Stopped", `served for ${formatDuration(upMs)}`),
   );
-  console.log(`  ${c.green}->${c.reset}  ${c.cyan}${url}${c.reset}`);
-  if (networkUrl) {
-    console.log(`  ${c.green}->${c.reset}  ${c.cyan}${networkUrl}${c.reset}`);
-  }
-  if (flags.length) {
-    console.log(`  ${c.dim}${flags.join("  ")}${c.reset}`);
-  }
-  console.log();
 }
 
 export function logReload(quiet: boolean, kind: "css" | "reload"): void {
   if (quiet) return;
-  console.log(`${c.yellow}*${c.reset} ${kind}`);
+  console.log(`${paint.warn("*")} ${kind}`);
 }

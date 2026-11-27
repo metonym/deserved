@@ -2,41 +2,50 @@
 import { resolve } from "node:path";
 
 import { version as VERSION } from "../package.json";
+import { handleInterrupt } from "./live";
+import { erasesEcho } from "./log";
 import { DEFAULT_OPTIONS, type Options } from "./options";
 import { BindError, RootError, startServer } from "./server";
+import { fitTerminal } from "./terminal";
+
+// Each line fits 80 columns, since fitTerminal only narrows: on a smaller
+// terminal it wraps a description under its column.
+const HELP = `deserved ${VERSION} · a tiny Bun static file server
+
+Usage
+  deserved [path] [options]
+
+Options
+  -p, --port <n>       port · default 3000 or $PORT, the next free one if taken
+  -H, --host <host>    hostname · default localhost
+  -s, --spa            serve index.html for a route with no file
+  -w, --watch          reload the page when a file changes
+  -o, --open           open the browser
+  --cors               allow requests from any origin
+  --dir, --no-dir      list a folder that has no index.html · default on
+  --cache              long-lived, immutable cache headers for assets
+  --no-cache           no cache headers · the default
+  --compress           zstd or gzip, negotiated per request · the default
+  --no-compress        send every file as it is
+  -q, --quiet          no request log
+  -h, --help           this help
+  -v, --version        the version
+
+Examples
+  deserved .
+  deserved dist --spa
+  deserved dist --port 8080
+  deserved docs --watch --open
+  PORT=8080 deserved dist
+
+Exit codes
+  130 stopped by Ctrl-C, 143 by SIGTERM, 1 when the folder or port
+  fails, 2 when called wrong.`;
 
 function printHelp() {
-  console.log(`
-  deserved - tiny Bun static file server
-
-  Usage
-    deserved [path] [options]
-
-  Options
-    -p, --port <n>       Port (default: 3000, or $PORT; hops to the next
-                          free port unless set explicitly)
-    -H, --host <host>    Hostname (default: localhost)
-    -s, --spa            SPA fallback to index.html
-    -w, --watch          Live reload on file changes
-    -o, --open           Open browser
-        --cors           Enable CORS
-        --dir            Enable directory listing (default)
-        --no-dir         Disable directory listing
-        --cache          Long-lived, immutable cache headers for assets
-        --no-cache       Disable cache headers (default)
-        --compress       zstd or gzip, negotiated per request (default)
-        --no-compress    Disable compression
-    -q, --quiet          Suppress request logs
-    -h, --help           Show help
-    -v, --version        Show version
-
-  Examples
-    deserved .
-    deserved dist --spa
-    deserved dist --port 8080
-    deserved docs --watch --open
-    PORT=8080 deserved dist
-`);
+  console.log(
+    fitTerminal(HELP, process.stdout.isTTY === true, process.stdout.columns),
+  );
 }
 
 type CliOptions = Options & { portExplicit: boolean };
@@ -200,15 +209,17 @@ function fail(msg: string, suggestion?: string): never {
 if (import.meta.main) {
   const opts = parseArgs(process.argv);
 
-  // Registered before the server starts, so a signal sent once the banner
-  // prints, while `--watch` is still setting up, still shuts it down.
+  // Registered before the server starts, so a signal sent while it binds
+  // or sets up `--watch` still stops it. The first Ctrl-C closes the
+  // server and prints how long it served, then exits 130 (SIGTERM, 143);
+  // a second exits at once.
   let handle: Awaited<ReturnType<typeof startServer>> | undefined;
-  const shutdown = async () => {
-    await handle?.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  handleInterrupt({
+    process,
+    write: (text) => process.stdout.write(text),
+    terminal: erasesEcho,
+    onStop: () => handle?.stop(),
+  });
 
   try {
     handle = await startServer(opts, { portExplicit: opts.portExplicit });

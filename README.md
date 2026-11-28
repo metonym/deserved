@@ -31,7 +31,7 @@ bunx deserved [path] [options]
 | `-o, --open` | Open the browser |
 | `--cors` | Enable CORS |
 | `--dir`, `--no-dir` | Directory listing (default on) |
-| `--cache`, `--no-cache` | Long-lived, immutable cache headers for assets (default off) |
+| `--cache`, `--no-cache` | Cache a file named with a content hash, as `App-C7VX6EYu.js`, for good, and revalidate the rest (default off) |
 | `--compress`, `--no-compress` | zstd/gzip compression (default on) |
 | `-q, --quiet` | Suppress request logs |
 | `-h, --help` | Show help |
@@ -114,7 +114,9 @@ Bun.serve({ fetch: createHandler({ root: "dist", spa: true, quiet: true }) });
   page reload
 - zstd or gzip compression, negotiated per request
 - Cache headers off by default (`no-cache`);
-  opt in per-run with `--cache` for long-lived, immutable asset caching
+  opt in per-run with `--cache`, which caches a file named with a
+  content hash for good (`immutable`) and revalidates every other file,
+  HTML included, so a rebuild's changes show
 - Directory listings (disable with `--no-dir`)
 - Dotfiles (`.env`, `.git/`) are never served, except `/.well-known/`
 - Symlinks can't escape the served root

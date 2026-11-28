@@ -25,7 +25,8 @@ Options
   -o, --open           open the browser
   --cors               allow requests from any origin
   --dir, --no-dir      list a folder that has no index.html · default on
-  --cache              long-lived, immutable cache headers for assets
+  --cache              cache a file named with a content hash for good;
+                       revalidate the rest
   --no-cache           no cache headers · the default
   --compress           zstd or gzip, negotiated per request · the default
   --no-compress        send every file as it is

@@ -80,6 +80,25 @@ export function isHtml(type: string): boolean {
   return type.startsWith("text/html");
 }
 
+// A content hash, as bundlers write one into a name: 8 or more letters
+// and digits, with at least one of each, so a word or a date isn't one.
+const HASH = /^(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Za-z])[A-Za-z0-9_]{8,}$/;
+
+// Whether a file's name carries a content hash, as `App-C7VX6EYu.js`,
+// `carbon.2npn1ls6.css` or `App-C7VX6EYu.js.map` do: a part between the
+// name and the extension, split at `-` and `.`, that looks like one. A
+// rebuild that changes such a file changes its name, so it can be cached
+// for good; any other file can change in place. A hash this misses, as
+// one with a `-` in it, only costs a revalidation.
+export function hasContentHash(path: string): boolean {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const parts = name.split(/[-.]/);
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (HASH.test(parts[i] ?? "")) return true;
+  }
+  return false;
+}
+
 export function makeEtag(size: number, mtimeMs: number, tag = ""): string {
   return `"${size}-${Math.trunc(mtimeMs)}${tag}"`;
 }
@@ -918,6 +937,10 @@ async function serveFile(
   const { path, file, size, mtimeMs } = resolved;
   const type = contentType(file, path);
   const htmlish = forceHtmlCache || isHtml(type);
+  // --cache keeps for good only a file a rebuild renames; HTML, and
+  // anything changed in place, revalidates against its ETag.
+  const immutable =
+    opts.cache && !opts.watch && !htmlish && hasContentHash(path);
   // Injected HTML must not share the raw-file ETag or a later non-watch
   // run will 304 the old body (still requesting /__live.js).
   const etag = makeEtag(size, mtimeMs, opts.watch && htmlish ? "-live" : "");
@@ -927,7 +950,7 @@ async function serveFile(
     compressible && (liveHtml || size < 2_000_000) ? pickEncoding(req) : null;
 
   if (isNotModified(req, etag, mtimeMs)) {
-    const notModifiedHeaders = baseHeaders(etag, opts, htmlish, mtimeMs);
+    const notModifiedHeaders = baseHeaders(etag, immutable, mtimeMs);
     if (compressible) notModifiedHeaders.Vary = "Accept-Encoding";
     if (encoding) notModifiedHeaders.ETag = weaken(etag);
     return new Response(null, {
@@ -936,7 +959,7 @@ async function serveFile(
     });
   }
 
-  const headers = baseHeaders(etag, opts, htmlish, mtimeMs);
+  const headers = baseHeaders(etag, immutable, mtimeMs);
   headers["Content-Type"] = type;
   headers["Accept-Ranges"] = "bytes";
   if (compressible) headers.Vary = "Accept-Encoding";
@@ -1023,17 +1046,15 @@ function httpDate(mtimeMs: number): string {
 // real Headers instance from it.
 export function baseHeaders(
   etag: string,
-  opts: Options,
-  isHtmlFile: boolean,
+  immutable: boolean,
   mtimeMs: number,
 ): Record<string, string> {
   return {
     ETag: etag,
     "Last-Modified": httpDate(mtimeMs),
-    "Cache-Control":
-      opts.watch || !opts.cache || isHtmlFile
-        ? "no-cache"
-        : "public, max-age=31536000, immutable",
+    "Cache-Control": immutable
+      ? "public, max-age=31536000, immutable"
+      : "no-cache",
   };
 }
 

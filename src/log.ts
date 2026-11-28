@@ -1,4 +1,3 @@
-import { isAgent } from "./agent";
 import {
   ASCII_GLYPHS,
   formatDuration,
@@ -11,6 +10,7 @@ import {
 import {
   closingLine,
   createPaint,
+  isAgent,
   MEASURE,
   PLAIN,
   SEPARATOR,

@@ -84,17 +84,24 @@ export function isHtml(type: string): boolean {
 // and digits, with at least one of each, so a word or a date isn't one.
 const HASH = /^(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Za-z])[A-Za-z0-9_]{8,}$/;
 
-// Whether a file's name carries a content hash, as `App-C7VX6EYu.js`,
-// `carbon.2npn1ls6.css` or `App-C7VX6EYu.js.map` do: a part between the
-// name and the extension, split at `-` and `.`, that looks like one. A
-// rebuild that changes such a file changes its name, so it can be cached
-// for good; any other file can change in place. A hash this misses, as
-// one with a `-` in it, only costs a revalidation.
-export function hasContentHash(path: string): boolean {
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  const parts = name.split(/[-.]/);
-  for (let i = 1; i < parts.length - 1; i++) {
-    if (HASH.test(parts[i] ?? "")) return true;
+// Whether a URL's path carries a content hash, in the file's name, as
+// `App-C7VX6EYu.js`, `carbon.2npn1ls6.css` or `App-C7VX6EYu.js.map` do,
+// or in a folder's, as `framed-c0938bfc/Button.css` does: a part after
+// the first, split at `-` and `.`, that looks like one, and in a file's
+// name, before the extension. A rebuild that changes such a file changes
+// its URL, so it can be cached for good; any other file can change in
+// place. A hash this misses, as one with a `-` in it, only costs a
+// revalidation. It reads the URL, not the file's path on disk, so a
+// folder above the served root never counts.
+export function hasContentHash(pathname: string): boolean {
+  const segments = pathname.split("/");
+  const last = segments.length - 1;
+  for (const [s, segment] of segments.entries()) {
+    const parts = segment.split(/[-.]/);
+    const end = s === last ? parts.length - 1 : parts.length;
+    for (let i = 1; i < end; i++) {
+      if (HASH.test(parts[i] ?? "")) return true;
+    }
   }
   return false;
 }
@@ -717,7 +724,7 @@ async function handleDecoded(
     if (resolved.kind === "dir-index" && !pathname.endsWith("/")) {
       return send(directoryRedirect(rawPathname, req.url));
     }
-    return send(await serveFile(getCompressed, req, resolved, opts));
+    return send(await serveFile(getCompressed, req, pathname, resolved, opts));
   }
 
   const wantsHtml = acceptsHtml(req);
@@ -725,7 +732,9 @@ async function handleDecoded(
   if (opts.spa && wantsHtml && shouldSpaFallback(pathname)) {
     const index = resolveCached("/");
     if (index) {
-      return send(await serveFile(getCompressed, req, index, opts, true));
+      return send(
+        await serveFile(getCompressed, req, pathname, index, opts, true),
+      );
     }
   }
 
@@ -930,6 +939,7 @@ async function tryCompress(
 async function serveFile(
   getCompressed: GetCompressed,
   req: Request,
+  pathname: string,
   resolved: ResolvedFile,
   opts: Options,
   forceHtmlCache = false,
@@ -940,7 +950,7 @@ async function serveFile(
   // --cache keeps for good only a file a rebuild renames; HTML, and
   // anything changed in place, revalidates against its ETag.
   const immutable =
-    opts.cache && !opts.watch && !htmlish && hasContentHash(path);
+    opts.cache && !opts.watch && !htmlish && hasContentHash(pathname);
   // Injected HTML must not share the raw-file ETag or a later non-watch
   // run will 304 the old body (still requesting /__live.js).
   const etag = makeEtag(size, mtimeMs, opts.watch && htmlish ? "-live" : "");

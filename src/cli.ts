@@ -2,11 +2,13 @@
 import { resolve } from "node:path";
 
 import { version as VERSION } from "../package.json";
-import { handleInterrupt } from "./live";
-import { erasesEcho } from "./log";
 import { DEFAULT_OPTIONS, type Options } from "./options";
-import { BindError, RootError, startServer } from "./server";
+import type { ServerHandle } from "./server";
 import { fitTerminal } from "./terminal";
+
+// Only the flags' parser and the help load on every start: the server and
+// its log are imported once the flags have parsed, so --help, --version
+// and a usage error never load them.
 
 // Each line fits 80 columns, since fitTerminal only narrows: on a smaller
 // terminal it wraps a description under its column.
@@ -208,12 +210,21 @@ function fail(msg: string, suggestion?: string): never {
 
 if (import.meta.main) {
   const opts = parseArgs(process.argv);
+  const [
+    { handleInterrupt },
+    { erasesEcho },
+    { BindError, RootError, startServer },
+  ] = await Promise.all([
+    import("./live"),
+    import("./log"),
+    import("./server"),
+  ]);
 
   // Registered before the server starts, so a signal sent while it binds
   // or sets up `--watch` still stops it. The first Ctrl-C closes the
   // server and prints how long it served, then exits 130 (SIGTERM, 143);
   // a second exits at once.
-  let handle: Awaited<ReturnType<typeof startServer>> | undefined;
+  let handle: ServerHandle | undefined;
   handleInterrupt({
     process,
     write: (text) => process.stdout.write(text),

@@ -6,59 +6,33 @@
 // copy, beside its copy of terminal.ts, and it runs on Node as on Bun.
 import {
   aligned,
+  cursorHidden,
   fitWidth,
+  type Glyphs,
+  hideCursor,
   isDumb,
+  type KeyHint,
+  keyHints,
+  markOf,
   MEASURE,
   type Paint,
   plural,
   SEPARATOR,
+  showCursor,
   textWidth,
   truncateWords,
 } from "./terminal.ts";
 
+export {
+  ASCII_GLYPHS,
+  type Glyphs,
+  type KeyHint,
+  keyHints,
+  UNICODE_GLYPHS,
+  wantsAscii,
+} from "./terminal.ts";
+
 type Env = Readonly<Record<string, string | undefined>>;
-
-/** The marks a live component draws, one per state. */
-export type Glyphs = {
-  done: string;
-  failed: string;
-  skipped: string;
-  pending: string;
-  spinner: readonly string[];
-};
-
-/** The marks for a terminal whose locale is UTF-8. */
-export const UNICODE_GLYPHS: Glyphs = {
-  done: "✓",
-  failed: "✗",
-  skipped: "-",
-  pending: "○",
-  spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-};
-
-// One frame for running, since an ASCII spinner's `-` would read as
-// skipped for a frame; the seconds still move past one.
-/** The same marks in ASCII, each its own shape, so none needs color. */
-export const ASCII_GLYPHS: Glyphs = {
-  done: "+",
-  failed: "x",
-  skipped: "-",
-  pending: ".",
-  spinner: [">"],
-};
-
-// An unset locale is taken as UTF-8, every current system's default,
-// since CI and a GUI's shell often set none; one that names C or
-// another charset gets ASCII, as TERM=dumb does.
-/**
- * Whether to draw ASCII_GLYPHS: under TERM=dumb, or a locale that
- * isn't UTF-8.
- */
-export function wantsAscii(env: Env): boolean {
-  if (isDumb(env)) return true;
-  const locale = env.LC_ALL || env.LC_CTYPE || env.LANG;
-  return locale !== undefined && locale !== "" && !/utf-?8/i.test(locale);
-}
 
 // A coding agent and a log file read every frame a redraw writes, and
 // TERM=dumb knows no cursor movement, so each gets plain lines instead.
@@ -106,12 +80,8 @@ const formatElapsed = (ms: number) => {
 /** What a component draws with: the colors, the glyphs and the width. */
 export type Look = { paint: Paint; glyphs: Glyphs; columns: number };
 
-/** A key a person can press, and what it does, for a hint line. */
-export type Key = { key: string; does: string };
-
-/** Renders keys as one faint hint: `o open · q quit`. */
-export const keyHints = (paint: Paint, keys: readonly Key[]): string =>
-  paint.faint(keys.map((k) => `${k.key} ${k.does}`).join(SEPARATOR));
+/** A key a person can press, and what it does: terminal.ts's KeyHint. */
+export type Key = KeyHint;
 
 /** One task of a task list, in one of its five states. */
 export type Task =
@@ -257,6 +227,96 @@ export function renderTasks(
   );
 }
 
+const finished = (task: Task) =>
+  task.status === "done" ||
+  task.status === "failed" ||
+  task.status === "skipped";
+
+const BAR_WIDTH = 20;
+
+// Done and to-do differ in shape as well as color, so the bar reads
+// without color too; the count says it in words.
+/**
+ * Renders how far a task list is as a bar and
+ * a count: `━━━━━━━━──────────── 4 of 10 benchmarks · 1 failed`.
+ */
+export function renderTaskBar(
+  tasks: readonly Task[],
+  look: Look,
+  noun = "task",
+): string {
+  const { paint, glyphs } = look;
+  const total = tasks.length;
+  const ended = tasks.filter(finished).length;
+  const failed = tasks.filter((t) => t.status === "failed").length;
+  const filled =
+    total === 0 ? BAR_WIDTH : Math.round((ended / total) * BAR_WIDTH);
+  const bar =
+    paint.good(markOf(glyphs, "barDone").repeat(filled)) +
+    paint.dim(markOf(glyphs, "barTodo").repeat(BAR_WIDTH - filled));
+  const count = `${ended} of ${plural(total, noun)}`;
+  const failures =
+    failed === 0 ? "" : paint.dim(`${SEPARATOR}${failed} failed`);
+  return cutLine(`${bar}  ${count}${failures}`, look.columns);
+}
+
+/** What a live frame of a task list holds besides its tasks. */
+export type FrameOptions = {
+  /**
+   * The terminal's height: a list taller than it shows a window around
+   * the tasks still running, and how many more are above and below.
+   */
+  rows?: number;
+  /** Draws renderTaskBar under the tasks. */
+  bar?: boolean;
+  /** What the bar counts. @default "task" */
+  noun?: string;
+};
+
+// The window starts at the first task still to end, since a queue runs
+// in order, and the ones above have their record to come; a frame never
+// fills the terminal's last row, where the cursor rests.
+function windowOf(
+  tasks: readonly Task[],
+  room: number,
+): { start: number; end: number } {
+  const count = tasks.length;
+  if (count <= room) return { start: 0, end: count };
+  const at = tasks.findIndex((t) => !finished(t));
+  const first = at === -1 ? count : at;
+  const one = Math.max(1, room - 1);
+  if (first < one) return { start: 0, end: one };
+  if (first >= count - one) return { start: count - one, end: count };
+  return { start: first, end: first + Math.max(1, room - 2) };
+}
+
+/**
+ * Renders a task list's live frame: renderTasks, windowed to fit `rows`,
+ * with the bar under it when asked.
+ */
+export function renderTaskFrame(
+  tasks: readonly Task[],
+  look: Look,
+  moment: Moment,
+  options: FrameOptions = {},
+): string[] {
+  const { paint, glyphs } = look;
+  const lines = renderTasks(tasks, look, moment);
+  const bar =
+    options.bar === true ? [renderTaskBar(tasks, look, options.noun)] : [];
+  if (options.rows === undefined) return [...lines, ...bar];
+  const room = Math.max(1, options.rows - 1 - bar.length);
+  const { start, end } = windowOf(tasks, room);
+  const more = (mark: string, n: number) =>
+    n > 0 ? [paint.dim(`${mark} ${n} more`)] : [];
+  return [
+    ...more(markOf(glyphs, "up"), start),
+    ...lines.slice(start, end),
+    ...more(markOf(glyphs, "down"), tasks.length - end),
+    ...bar,
+  ];
+}
+
 // Unaligned, since piped lines print one at a time as tasks finish, and
 // a program or grep reads each alone.
 /** Renders one finished task as a line for a pipe: `✓ lint · 812 ms`. */
@@ -330,8 +390,6 @@ export const stopTasks = (tasks: readonly Task[]): Task[] =>
     return task;
   });
 
-const HIDE_CURSOR = "\x1b[?25l";
-const SHOW_CURSOR = "\x1b[?25h";
 // Mode 2026 holds a frame until it's whole, so a terminal that knows it
 // never shows half of one; the rest ignore it.
 const SYNC_START = "\x1b[?2026h";
@@ -386,7 +444,7 @@ function createRegion(write: (text: string) => void): Region {
       return shown;
     },
     draw(next) {
-      frame((shown ? "" : HIDE_CURSOR) + redraw(lines, next));
+      frame((shown ? "" : hideCursor()) + redraw(lines, next));
       shown = true;
       lines = next;
     },
@@ -394,7 +452,7 @@ function createRegion(write: (text: string) => void): Region {
       frame(erase(lines.length) + text + lines.map((l) => `${l}\n`).join(""));
     },
     replace(text) {
-      frame(erase(lines.length) + text + (shown ? SHOW_CURSOR : ""));
+      frame(erase(lines.length) + text + (shown ? showCursor() : ""));
       lines = [];
       shown = false;
     },
@@ -411,6 +469,11 @@ export type LiveOptions = {
   nowMs: () => number;
   /** The terminal's width now, read at every frame so a resize fits. */
   columns?: () => number | undefined;
+  /**
+   * The terminal's height now, read at every frame: a task list taller
+   * than it shows a window. Without it, nothing is windowed.
+   */
+  rows?: () => number | undefined;
 };
 
 /** A task list a run updates as its tasks start and end. */
@@ -429,6 +492,20 @@ export type TaskList = {
   finish: () => readonly Task[];
   /** Leaves the record of a stopped run, what finished and what didn't. */
   stop: () => readonly Task[];
+  /**
+   * Erases the list and leaves no record, for a run whose report, on
+   * stdout, is the record; returns the tasks. Piped, the lines already
+   * written stay, and no more are.
+   */
+  clear: () => readonly Task[];
+};
+
+/** What a task list takes besides where it writes. */
+export type TaskListOptions = LiveOptions & {
+  /** What it counts, in the closing line and the bar. @default "task" */
+  noun?: string;
+  /** Draws done of total as a bar under the live list. */
+  bar?: boolean;
 };
 
 const lookOf = (options: LiveOptions): Look => ({
@@ -445,7 +522,7 @@ const lookOf = (options: LiveOptions): Look => ({
  */
 export function createTaskList(
   names: readonly string[],
-  options: LiveOptions & { noun?: string },
+  options: TaskListOptions,
 ): TaskList {
   const { write, nowMs } = options;
   const startMs = nowMs();
@@ -457,11 +534,18 @@ export function createTaskList(
     ? setInterval(() => {
         if (!region.shown && nowMs() - startMs < TIMING.showAfterMs) return;
         state.frame++;
+        const rows = options.rows?.();
         region.draw(
-          renderTasks(tasks, lookOf(options), {
-            nowMs: nowMs(),
-            frame: state.frame,
-          }),
+          renderTaskFrame(
+            tasks,
+            lookOf(options),
+            { nowMs: nowMs(), frame: state.frame },
+            {
+              ...(rows !== undefined && rows > 0 && { rows }),
+              ...(options.bar === true && { bar: true }),
+              ...(options.noun !== undefined && { noun: options.noun }),
+            },
+          ),
         );
       }, TIMING.frameMs)
     : undefined;
@@ -482,11 +566,15 @@ export function createTaskList(
   };
   const withDetail = (detail: string | undefined) =>
     detail === undefined ? {} : { detail };
-  const settle = (stopped: boolean) => {
+  const settle = (stopped: boolean, record = true) => {
     if (state.settled) return tasks;
     state.settled = true;
     clearInterval(timer);
     if (stopped) tasks = stopTasks(tasks);
+    if (!record) {
+      if (options.redraw) region.replace("");
+      return tasks;
+    }
     const look = lookOf(options);
     const summary = renderTaskSummary(tasks, nowMs() - startMs, look, {
       stopped,
@@ -537,6 +625,7 @@ export function createTaskList(
     },
     finish: () => settle(false),
     stop: () => settle(true),
+    clear: () => settle(false, false),
   };
   return list;
 }
@@ -554,8 +643,16 @@ export function renderStatus(
     elapsedMs >= TIMING.countAfterMs
       ? paint.dim(`${SEPARATOR}${formatElapsed(elapsedMs)}`)
       : "";
-  return cutLine(`${spinner} ${text}${seconds}`, look.columns);
+  // The seconds are what moves, so a narrow terminal shortens the text
+  // first, and loses them only when the text would have no room left.
+  const lead = `${spinner} `;
+  const room = look.columns - textWidth(lead) - textWidth(seconds);
+  if (textWidth(text) <= room) return `${lead}${text}${seconds}`;
+  if (room >= MIN_TEXT) return `${lead}${cutLine(text, room)}${seconds}`;
+  return cutLine(`${lead}${text}`, look.columns);
 }
+
+const MIN_TEXT = 8;
 
 /** A line pinned under streaming output, while the output prints above it. */
 export type StatusLine = {
@@ -625,7 +722,7 @@ export type Ready = {
   /** How long it took to start. */
   tookMs?: number;
   /** The keys it reads; give none when stdin isn't a terminal. */
-  keys?: readonly Key[];
+  keys?: readonly KeyHint[];
 };
 
 // The address is bold and stands alone, so it reads first and copies
@@ -653,7 +750,7 @@ export function readyLines(look: Look, ready: Ready): string[] {
 export function waitingLine(
   look: Look,
   watching?: string,
-  keys: readonly Key[] = [],
+  keys: readonly KeyHint[] = [],
 ): string {
   const { paint, glyphs } = look;
   const where = watching === undefined ? "" : ` in ${watching}`;
@@ -663,32 +760,67 @@ export function waitingLine(
 
 /** The exit code of a run stopped by Ctrl-C: 128 plus SIGINT's 2. */
 export const EXIT_INTERRUPTED = 130;
-const EXIT_TERMINATED = 143;
+/** The exit code of a run stopped by SIGTERM: 128 plus its 15. */
+export const EXIT_TERMINATED = 143;
 const ERASE_ECHO = "\r\x1b[2K";
 
-type Signal = "SIGINT" | "SIGTERM";
+/** A signal that stops a run: Ctrl-C's, or a supervisor's SIGTERM. */
+export type StopSignal = "SIGINT" | "SIGTERM";
+
+/** The exit code for a run `signal` stopped: 128 plus its number. */
+export const exitCodeOf = (signal: StopSignal): number =>
+  signal === "SIGINT" ? EXIT_INTERRUPTED : EXIT_TERMINATED;
 
 /** The process, or what a test passes for it. */
 export type SignalTarget = {
-  on: (event: Signal | "exit", listener: () => void) => unknown;
-  off: (event: Signal | "exit", listener: () => void) => unknown;
+  on: (event: StopSignal | "exit", listener: () => void) => unknown;
+  off: (event: StopSignal | "exit", listener: () => void) => unknown;
   exit: (code: number) => void;
 };
+
+/**
+ * What to do with the `^C` a terminal echoes where the cursor rests:
+ * erase it, end its line so what prints next starts on its own, or leave
+ * it, as in a pipe, where there is none.
+ */
+export type Echo = "erase" | "newline" | "keep";
 
 /** What `handleInterrupt` restores and calls. */
 export type InterruptOptions = {
   process: SignalTarget;
   /** Writes to the terminal the live output is on. */
   write: (text: string) => void;
-  /** Whether `write` goes to a terminal, so the restoring codes are safe. */
+  /**
+   * Whether `write` goes to a terminal, so the restoring codes are safe;
+   * pass `wantsRedraw`'s answer.
+   */
   terminal: boolean;
-  /** stdin, whose raw mode is undone on every exit. */
-  input?: { isTTY?: boolean; setRawMode?: (raw: boolean) => unknown };
+  /**
+   * What to do with Ctrl-C's `^C`: `erase` on a terminal that redraws;
+   * `newline` on one that doesn't, as for a coding agent or TERM=dumb,
+   * and on one a child process shares, whose line an erase would clear;
+   * `keep` in a pipe.
+   * @default "erase" when `terminal`, else "keep"
+   */
+  echo?: Echo;
+  /**
+   * Whether it exits once `onStop` ends. Without, `stopped` resolves
+   * instead, and the caller prints the partial result and returns
+   * `exitCodeOf` the signal; a second Ctrl-C still exits at once.
+   * @default true
+   */
+  exit?: boolean;
+  /** stdin, whose raw mode is undone on every exit, if it's on. */
+  input?: {
+    isTTY?: boolean;
+    isRaw?: boolean;
+    setRawMode?: (raw: boolean) => unknown;
+  };
   /**
    * Prints the partial result, once the work has stopped; the process
    * exits when it resolves.
    */
-  onStop: (signal: Signal) => void | Promise<void>;
+  onStop?: (signal: StopSignal) => void | Promise<void>;
   /** Prints a last line when a second Ctrl-C quits before `onStop` ends. */
   onQuit?: () => void;
 };
@@ -697,8 +829,21 @@ export type InterruptOptions = {
 export type Interrupt = {
   /** Aborted at the first Ctrl-C, so the work stops. */
   readonly signal: AbortSignal;
+  /** The signal that stopped the run, from the moment it arrived. */
+  readonly stoppedBy: StopSignal | undefined;
+  /** Resolves with the signal once `onStop` has ended. */
+  readonly stopped: Promise<StopSignal>;
   /** Acts as Ctrl-C, for a program in raw mode, which reads it as a key. */
   interrupt: () => void;
+  /**
+   * Call when the work ends, before printing its result: waits a turn of
+   * the event loop, so a signal already sent is handled, then resolves
+   * the signal that stopped the run, or removes the handlers and
+   * resolves undefined. The Ctrl-C that stops a child process, a build
+   * or a browser, reaches this one too, and the child's failure can
+   * come back first.
+   */
+  settle: () => Promise<StopSignal | undefined>;
   /** Removes the handlers, once the run is done. */
   dispose: () => void;
 };
@@ -706,53 +851,85 @@ export type Interrupt = {
 /**
  * Handles Ctrl-C and SIGTERM: the first stops the work and prints what
  * finished, then exits 130 (143 for SIGTERM); a second exits at once.
- * The cursor and raw mode are restored on every exit, a crash included.
+ * On every exit, a crash included, it shows the cursor if a component
+ * hid it, and undoes raw mode if it's on.
  */
 export function handleInterrupt(options: InterruptOptions): Interrupt {
   const { process: target } = options;
   const controller = new AbortController();
-  const state = { restored: false, quitting: false };
+  const exits = options.exit ?? true;
+  const echo = options.echo ?? (options.terminal ? "erase" : "keep");
+  const state: {
+    restored: boolean;
+    stoppedBy: StopSignal | undefined;
+  } = { restored: false, stoppedBy: undefined };
+  let markStopped: (signal: StopSignal) => void = () => {};
+  const stopped = new Promise<StopSignal>((resolve) => {
+    markStopped = resolve;
+  });
   const restore = () => {
     if (state.restored) return;
     state.restored = true;
-    if (options.input?.isTTY === true) options.input.setRawMode?.(false);
-    if (options.terminal) options.write(SHOW_CURSOR);
+    const input = options.input;
+    if (input?.isTTY === true && input.isRaw !== false) {
+      input.setRawMode?.(false);
+    }
+    if (options.terminal && cursorHidden()) options.write(showCursor());
   };
-  const stop = (signal: Signal) => {
-    const code = signal === "SIGINT" ? EXIT_INTERRUPTED : EXIT_TERMINATED;
+  const quit = (code: number) => {
+    restore();
+    target.exit(code);
+  };
+  const stop = (signal: StopSignal, echoed: boolean) => {
     // The terminal echoes Ctrl-C as ^C where the cursor rests, the line
     // under a live region, and the record printed next would follow it.
-    if (options.terminal) options.write(ERASE_ECHO);
-    if (state.quitting) {
+    if (echoed) {
+      if (echo === "erase") options.write(ERASE_ECHO);
+      else if (echo === "newline") options.write("\n");
+    }
+    if (state.stoppedBy !== undefined) {
       options.onQuit?.();
-      restore();
-      target.exit(code);
+      quit(exitCodeOf(signal));
       return;
     }
-    state.quitting = true;
+    state.stoppedBy = signal;
     controller.abort();
-    const exit = () => {
+    const end = () => {
       restore();
-      target.exit(code);
+      markStopped(signal);
+      if (exits) target.exit(exitCodeOf(signal));
     };
     // A failing onStop still exits with the signal's code, since the run
     // was stopped either way.
     void Promise.resolve()
-      .then(() => options.onStop(signal))
-      .then(exit, exit);
+      .then(() => options.onStop?.(signal))
+      .then(end, end);
   };
-  const onInt = () => stop("SIGINT");
-  const onTerm = () => stop("SIGTERM");
+  const onInt = () => stop("SIGINT", true);
+  const onTerm = () => stop("SIGTERM", false);
+  const dispose = () => {
+    target.off("SIGINT", onInt);
+    target.off("SIGTERM", onTerm);
+    target.off("exit", restore);
+  };
   target.on("SIGINT", onInt);
   target.on("SIGTERM", onTerm);
   target.on("exit", restore);
   return {
     signal: controller.signal,
-    interrupt: onInt,
-    dispose() {
-      target.off("SIGINT", onInt);
-      target.off("SIGTERM", onTerm);
-      target.off("exit", restore);
+    get stoppedBy() {
+      return state.stoppedBy;
     },
+    stopped,
+    // A key read in raw mode has no echo to erase.
+    interrupt: () => stop("SIGINT", false),
+    settle: () =>
+      new Promise((resolve) => {
+        setImmediate(() => {
+          if (state.stoppedBy === undefined) dispose();
+          resolve(state.stoppedBy);
+        });
+      }),
+    dispose,
   };
 }

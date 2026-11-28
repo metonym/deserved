@@ -73,6 +73,151 @@ export const isDumb = (
   env: Readonly<Record<string, string | undefined>>,
 ): boolean => env.TERM === "dumb";
 
+// The variables a coding agent sets, one list so every tool agrees on
+// what an agent is: `AGENT` and `CLAUDECODE`, which Bun reads;
+// `AI_AGENT`, the cross-vendor name; and Codex's two. One that a shell
+// sets without an agent, as Replit's REPL_ID, stays out.
+export const AGENT_ENV = [
+  "AGENT",
+  "AI_AGENT",
+  "CLAUDECODE",
+  "CODEX_CI",
+  "CODEX_THREAD_ID",
+] as const;
+
+// The first agent variable that's set, for the line saying why the
+// output is the agent's. Empty or `0` is a person saying "not an agent"
+// without unsetting it.
+export const agentVariableOf = (
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined =>
+  AGENT_ENV.find((name) => {
+    const value = env[name];
+    return value !== undefined && value !== "" && value !== "0";
+  });
+
+// Whether a coding agent runs the tool, so color and redraws are off:
+// what wantsColor and wantsRedraw take as `agent`.
+export const isAgent = (
+  env: Readonly<Record<string, string | undefined>>,
+): boolean => agentVariableOf(env) !== undefined;
+
+/**
+ * The marks a component draws, one per state, and the shapes it draws
+ * with. The marks after `spinner` came later, so each is optional: a set
+ * without one draws UNICODE_GLYPHS' mark.
+ */
+export type Glyphs = {
+  done: string;
+  failed: string;
+  skipped: string;
+  pending: string;
+  spinner: readonly string[];
+  /** The choice the cursor is on. */
+  pointer?: string;
+  /** A choice a multi-select has picked. */
+  picked?: string;
+  /** A choice a multi-select hasn't picked. */
+  unpicked?: string;
+  /** More above a window of a list. */
+  up?: string;
+  /** More below a window of a list. */
+  down?: string;
+  /** The keys that move, in a key hint. */
+  upDown?: string;
+  /** The keys that choose sideways, in a key hint. */
+  leftRight?: string;
+  /** A bar's done part. */
+  barDone?: string;
+  /** A bar's part to go. */
+  barTodo?: string;
+};
+
+/** The marks for a terminal whose locale is UTF-8. */
+export const UNICODE_GLYPHS: Required<Glyphs> = {
+  done: "✓",
+  failed: "✗",
+  skipped: "-",
+  pending: "○",
+  spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  pointer: "›",
+  picked: "●",
+  unpicked: "○",
+  up: "↑",
+  down: "↓",
+  upDown: "↑↓",
+  leftRight: "←→",
+  barDone: "━",
+  barTodo: "─",
+};
+
+// One frame for running, since an ASCII spinner's `-` would read as
+// skipped for a frame; the seconds still move past one.
+/** The same marks in ASCII, each its own shape, so none needs color. */
+export const ASCII_GLYPHS: Required<Glyphs> = {
+  done: "+",
+  failed: "x",
+  skipped: "-",
+  pending: ".",
+  spinner: [">"],
+  pointer: ">",
+  picked: "[x]",
+  unpicked: "[ ]",
+  up: "^",
+  down: "v",
+  upDown: "up/down",
+  leftRight: "left/right",
+  barDone: "=",
+  barTodo: "-",
+};
+
+type Mark = Exclude<
+  keyof Glyphs,
+  "done" | "failed" | "skipped" | "pending" | "spinner"
+>;
+
+// A set made before a mark existed draws the Unicode one, so it
+// needn't change.
+export const markOf = (glyphs: Glyphs, mark: Mark): string =>
+  glyphs[mark] ?? UNICODE_GLYPHS[mark];
+
+// An unset locale is taken as UTF-8, every current system's default,
+// since CI and a GUI's shell often set none; one that names C or
+// another charset gets ASCII, as TERM=dumb does.
+/**
+ * Whether to draw ASCII_GLYPHS: under TERM=dumb, or a locale that
+ * isn't UTF-8.
+ */
+export function wantsAscii(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  if (isDumb(env)) return true;
+  const locale = env.LC_ALL || env.LC_CTYPE || env.LANG;
+  return locale !== undefined && locale !== "" && !/utf-?8/i.test(locale);
+}
+
+const HIDE_CURSOR = "\x1b[?25l";
+const SHOW_CURSOR = "\x1b[?25h";
+// What this process last did to the cursor, so an exit shows it only
+// when something hid it.
+const cursor = { hidden: false };
+
+// The code that hides the cursor, noted, so an exit knows to show it.
+export function hideCursor(): string {
+  cursor.hidden = true;
+  return HIDE_CURSOR;
+}
+
+// The code that shows the cursor again, noted, so an exit doesn't write
+// it twice.
+export function showCursor(): string {
+  cursor.hidden = false;
+  return SHOW_CURSOR;
+}
+
+// Whether a component hid the cursor and hasn't shown it since.
+export const cursorHidden = (): boolean => cursor.hidden;
+
 // "n/a", because an em dash for a missing value reads as punctuation.
 export const MISSING = "n/a";
 
@@ -95,18 +240,77 @@ export const NOTE_INDENT = "    ";
 
 // The last line of a run that finished: what it did and what it took,
 // so a person sees it ended and why it took that long.
+// `glyphs` gives the mark, as ASCII_GLYPHS where the locale isn't UTF-8.
 export function closingLine(
   paint: Paint,
   what: string,
   detail?: string,
+  glyphs: Pick<Glyphs, "done"> = UNICODE_GLYPHS,
 ): string {
-  return `${paint.good("✓")} ${what}${detail === undefined ? "" : paint.dim(`${SEPARATOR}${detail}`)}`;
+  return `${paint.good(glyphs.done)} ${what}${detail === undefined ? "" : paint.dim(`${SEPARATOR}${detail}`)}`;
 }
 
 // A run that found problems ends in a cross, so the last line says
 // whether to act, as the check mark does when there's nothing to do.
-export function failLine(paint: Paint, what: string, detail?: string): string {
-  return `${paint.bad("✗")} ${what}${detail === undefined ? "" : paint.dim(`${SEPARATOR}${detail}`)}`;
+export function failLine(
+  paint: Paint,
+  what: string,
+  detail?: string,
+  glyphs: Pick<Glyphs, "failed"> = UNICODE_GLYPHS,
+): string {
+  return `${paint.bad(glyphs.failed)} ${what}${detail === undefined ? "" : paint.dim(`${SEPARATOR}${detail}`)}`;
+}
+
+/** A key a person can press, and what it does, for a hint line. */
+export type KeyHint = { key: string; does: string };
+
+/** Renders keys as one faint hint line: `↑↓ move · enter run · esc cancel`. */
+export const keyHints = (paint: Paint, keys: readonly KeyHint[]): string =>
+  paint.faint(keys.map((k) => `${k.key} ${k.does}`).join(SEPARATOR));
+
+// A swap of two neighbors counts as one edit (optimal string alignment),
+// so "--otu" is one edit from "--out".
+function distance(a: string, b: string): number {
+  const width = b.length + 1;
+  const cells = new Uint32Array((a.length + 1) * width);
+  const d = (i: number, j: number) => cells[i * width + j] ?? 0;
+  for (let i = 0; i <= a.length; i++) cells[i * width] = i;
+  for (let j = 0; j <= b.length; j++) cells[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let best = Math.min(
+        d(i - 1, j) + 1,
+        d(i, j - 1) + 1,
+        d(i - 1, j - 1) + cost,
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        best = Math.min(best, d(i - 2, j - 2) + 1);
+      }
+      cells[i * width + j] = best;
+    }
+  }
+  return d(a.length, b.length);
+}
+
+// The real flag or command nearest a typo, for "did you mean --json?":
+// within a third of the input's length in edits, so a short typo still
+// finds its flag and a word that's merely long doesn't match.
+export function nearest(
+  input: string,
+  candidates: Iterable<string>,
+): string | undefined {
+  const most = Math.max(1, Math.floor(input.length / 3));
+  let best: string | undefined;
+  let bestDistance = most + 1;
+  for (const candidate of candidates) {
+    const d = distance(input, candidate);
+    if (d < bestDistance) {
+      best = candidate;
+      bestDistance = d;
+    }
+  }
+  return best;
 }
 
 // Cut at a word boundary, so a label never ends mid-word; JSON keeps
@@ -208,12 +412,10 @@ function splitAt(line: string, columns: number): [string, string] {
   return [line.slice(0, i), line.slice(i)];
 }
 
-// Text whose lines are wider than `width`, wrapped at words: help on a
-// narrow terminal, where a long line would wrap mid-word. A continuation
-// line starts under its line's second column, or under its indent, so a
-// table of options and their descriptions stays a table.
 // Help and other prose for a person: fit to the terminal, at most 80
 // columns, and left whole when piped, since a program reads whole lines.
+// Each line wraps alone; fitHelp rewraps a description written over
+// several lines as one.
 export const fitTerminal = (
   text: string,
   terminal: boolean,
@@ -221,6 +423,56 @@ export const fitTerminal = (
 ): string =>
   terminal ? fitWidth(text, Math.min(MEASURE, columns || MEASURE)) : text;
 
+// The separator stays with the word after it, so no line ends on a
+// dangling "·".
+function wordsOf(text: string): string[] {
+  const words: string[] = [];
+  for (const word of text.split(/ +/)) {
+    const last = words.at(-1);
+    if (last !== undefined && last.replace(ESCAPE, "") === "·") {
+      words[words.length - 1] = `${last} ${word}`;
+    } else if (word !== "") words.push(word);
+  }
+  return words;
+}
+
+// Words in lines of at most `room` columns; a word wider than that is
+// cut into pieces that fit, when `breakWords`, or else left whole on a
+// line of its own.
+function wrapWords(
+  words: readonly string[],
+  room: number,
+  breakWords: boolean,
+): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const pieces: string[] = [];
+    let rest = word;
+    while (breakWords && textWidth(rest) > room) {
+      const [piece, after] = splitAt(rest, room);
+      pieces.push(piece);
+      rest = after;
+    }
+    pieces.push(rest);
+    for (const piece of pieces) {
+      const next = current === "" ? piece : `${current} ${piece}`;
+      if (current !== "" && textWidth(next) > room) {
+        lines.push(current);
+        current = piece;
+      } else {
+        current = next;
+      }
+    }
+  }
+  if (current !== "") lines.push(current);
+  return lines;
+}
+
+// Text whose lines are wider than `width`, wrapped at words: help on a
+// narrow terminal, where a long line would wrap mid-word. A continuation
+// line starts under its line's second column, or under its indent, so a
+// table of options and their descriptions stays a table.
 export function fitWidth(text: string, width: number): string {
   return text
     .split("\n")
@@ -231,31 +483,117 @@ export function fitWidth(text: string, width: number): string {
         hang = /^ */.exec(line.replace(ESCAPE, ""))?.[0].length ?? 0;
       const [head, rest] = splitAt(line, hang);
       const room = Math.max(1, width - hang);
-      const lines: string[] = [];
-      let current = "";
-      // The separator stays with the word after it, so no line ends on
-      // a dangling "·".
-      const words: string[] = [];
-      for (const word of rest.split(/ +/)) {
-        const last = words.at(-1);
-        if (last !== undefined && last.replace(ESCAPE, "") === "·") {
-          words[words.length - 1] = `${last} ${word}`;
-        } else if (word !== "") words.push(word);
-      }
-      for (const word of words) {
-        const next = current === "" ? word : `${current} ${word}`;
-        if (current !== "" && textWidth(next) > room) {
-          lines.push(current);
-          current = word;
-        } else {
-          current = next;
-        }
-      }
-      if (current !== "") lines.push(current);
-      return lines.map((part, k) => (k === 0 ? head : " ".repeat(hang)) + part);
+      return wrapWords(wordsOf(rest), room, false).map(
+        (part, k) => (k === 0 ? head : " ".repeat(hang)) + part,
+      );
     })
     .join("\n");
 }
+
+// What fitHelp does with a word wider than its line: "break" cuts it,
+// so no line is wider than the terminal; "keep" leaves it whole on a
+// line of its own, for a URL or a path a person copies.
+export type HelpOptions = { words?: "break" | "keep" };
+
+const LEAD = /^ */;
+// A list item's lines continue under its text, not its marker, so the
+// wrap hangs there.
+const LIST_ITEM = /^ *(?:[-*•]|\d+[.)]) +(?=\S)/;
+const leadOf = (line: string) =>
+  LEAD.exec(line.replace(ESCAPE, ""))?.[0].length ?? 0;
+// Where a line's text continues, since a wrap hangs there: under its
+// second column, an item's text, or its indent.
+const columnOf = (line: string) => {
+  const item = LIST_ITEM.exec(line.replace(ESCAPE, ""));
+  return item ? textWidth(item[0]) : hangOf(line);
+};
+
+// A line continues the paragraph above when it starts where the
+// paragraph's first line has its text, under the description or at the
+// margin, and isn't a row or an item of its own.
+function paragraphsOf(text: string): string[][] {
+  const paragraphs: string[][] = [];
+  for (const line of text.split("\n")) {
+    const current = paragraphs.at(-1);
+    const first = current?.[0];
+    const continues =
+      current !== undefined &&
+      first !== undefined &&
+      line.trim() !== "" &&
+      (current.at(-1) ?? "").trim() !== "" &&
+      !LIST_ITEM.test(line.replace(ESCAPE, "")) &&
+      hangOf(line) === leadOf(line) &&
+      leadOf(line) === columnOf(first);
+    if (continues) current.push(line);
+    else paragraphs.push([line]);
+  }
+  return paragraphs;
+}
+
+// A paragraph that fits stays as written; one with a line too wide is
+// joined and wrapped as one, its description under its second column,
+// or under the option, indented, when the column would leave too little
+// room: past half the width, or narrower than its longest word.
+function fitParagraph(
+  lines: readonly string[],
+  width: number,
+  breakWords: boolean,
+): string[] {
+  if (lines.every((line) => textWidth(line) <= width)) return [...lines];
+  const [first = "", ...rest] = lines;
+  const joined = [first.trimEnd(), ...rest.map((line) => line.trim())].join(
+    " ",
+  );
+  const lead = leadOf(first);
+  const column = columnOf(first);
+  const [head, body] = splitAt(joined, column);
+  const words = wordsOf(body);
+  const longest = Math.max(0, ...words.map(textWidth));
+  const hung = (prefix: string, indent: number) =>
+    wrapWords(words, Math.max(1, width - indent), breakWords).map(
+      (part, k) => (k === 0 ? prefix : " ".repeat(indent)) + part,
+    );
+  if (column === lead || (column <= width / 2 && column + longest <= width)) {
+    return hung(head, column);
+  }
+  const [margin, option] = splitAt(head.trimEnd(), lead);
+  const optionLines = wrapWords(
+    wordsOf(option),
+    Math.max(1, width - lead),
+    breakWords,
+  ).map((part, k) => (k === 0 ? margin : " ".repeat(lead)) + part);
+  const indent = lead + 4;
+  return [...optionLines, ...hung(" ".repeat(indent), indent)];
+}
+
+// Help as a terminal shows it: at most 80 columns, or the terminal's
+// width when narrower, and as written when piped, since a program reads
+// whole lines. Unlike fitTerminal, a description written over several
+// lines rewraps as one, so it isn't left ragged; on a terminal too
+// narrow for its column it goes under its option; and a word too long
+// for a line is cut, or kept whole with `words: "keep"`.
+export const fitHelp = (
+  text: string,
+  terminal: boolean,
+  columns: number | undefined,
+  options: HelpOptions = {},
+): string =>
+  terminal
+    ? wrapHelp(text, Math.min(MEASURE, columns || MEASURE), options)
+    : text;
+
+// fitHelp at a given width, on a terminal or not, so a test or a caller
+// that knows the width needn't fake a terminal.
+export const wrapHelp = (
+  text: string,
+  width: number,
+  options: HelpOptions = {},
+): string =>
+  paragraphsOf(text)
+    .flatMap((lines) =>
+      fitParagraph(lines, width, (options.words ?? "break") === "break"),
+    )
+    .join("\n");
 
 // A cell that draws a rule as wide as its column, so totals read apart
 // from the rows above them.
@@ -376,6 +714,7 @@ export function createProgress(
   write: (text: string) => void,
   paint: Paint,
   nowMs: () => number,
+  glyphs: Glyphs = UNICODE_GLYPHS,
 ): Progress {
   const startMs = nowMs();
   let text = "";
@@ -385,7 +724,8 @@ export function createProgress(
     // Done and to-do differ in shape as well as color, so the bar reads
     // without color too.
     const bar =
-      paint.good("━".repeat(done)) + paint.dim("─".repeat(BAR_WIDTH - done));
+      paint.good(markOf(glyphs, "barDone").repeat(done)) +
+      paint.dim(markOf(glyphs, "barTodo").repeat(BAR_WIDTH - done));
     const seconds = Math.floor((nowMs() - startMs) / 1000);
     write(`${CLEAR_LINE}${bar}  ${text}${paint.dim(` · ${seconds} s`)}`);
   };

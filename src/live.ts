@@ -806,10 +806,19 @@ export type InterruptOptions = {
   /**
    * Whether it exits once `onStop` ends. Without, `stopped` resolves
    * instead, and the caller prints the partial result and returns
-   * `exitCodeOf` the signal; a second Ctrl-C still exits at once.
+   * `exitCodeOf` the signal; a second Ctrl-C still exits at once, unless
+   * `secondExit` is false.
    * @default true
    */
   exit?: boolean;
+  /**
+   * Whether a second Ctrl-C or SIGTERM exits at once. Without, it calls
+   * `onQuit`, restores the terminal, sets `forced` and resolves `stopped`
+   * if `onStop` hasn't ended, and the caller exits, at once, with
+   * `exitCodeOf(forced)`; a signal after it does nothing.
+   * @default true
+   */
+  secondExit?: boolean;
   /** stdin, whose raw mode is undone on every exit, if it's on. */
   input?: {
     isTTY?: boolean;
@@ -831,8 +840,13 @@ export type Interrupt = {
   readonly signal: AbortSignal;
   /** The signal that stopped the run, from the moment it arrived. */
   readonly stoppedBy: StopSignal | undefined;
-  /** Resolves with the signal once `onStop` has ended. */
+  /**
+   * Resolves with the signal once `onStop` has ended, or, when
+   * `secondExit` is false, at a second signal, whichever comes first.
+   */
   readonly stopped: Promise<StopSignal>;
+  /** The second signal, which asks to quit at once, from its arrival. */
+  readonly forced: StopSignal | undefined;
   /** Acts as Ctrl-C, for a program in raw mode, which reads it as a key. */
   interrupt: () => void;
   /**
@@ -858,11 +872,13 @@ export function handleInterrupt(options: InterruptOptions): Interrupt {
   const { process: target } = options;
   const controller = new AbortController();
   const exits = options.exit ?? true;
+  const secondExits = options.secondExit ?? true;
   const echo = options.echo ?? (options.terminal ? "erase" : "keep");
   const state: {
     restored: boolean;
     stoppedBy: StopSignal | undefined;
-  } = { restored: false, stoppedBy: undefined };
+    forced: StopSignal | undefined;
+  } = { restored: false, stoppedBy: undefined, forced: undefined };
   let markStopped: (signal: StopSignal) => void = () => {};
   const stopped = new Promise<StopSignal>((resolve) => {
     markStopped = resolve;
@@ -887,9 +903,17 @@ export function handleInterrupt(options: InterruptOptions): Interrupt {
       if (echo === "erase") options.write(ERASE_ECHO);
       else if (echo === "newline") options.write("\n");
     }
+    // Past the second, the caller is already exiting.
+    if (!secondExits && state.forced !== undefined) return;
     if (state.stoppedBy !== undefined) {
+      state.forced = signal;
       options.onQuit?.();
-      quit(exitCodeOf(signal));
+      if (secondExits) {
+        quit(exitCodeOf(signal));
+      } else {
+        restore();
+        markStopped(state.stoppedBy);
+      }
       return;
     }
     state.stoppedBy = signal;
@@ -897,7 +921,10 @@ export function handleInterrupt(options: InterruptOptions): Interrupt {
     const end = () => {
       restore();
       markStopped(signal);
-      if (exits) target.exit(exitCodeOf(signal));
+      // Without secondExit, a forced quit is the caller's to make.
+      if (exits && (secondExits || state.forced === undefined)) {
+        target.exit(exitCodeOf(signal));
+      }
     };
     // A failing onStop still exits with the signal's code, since the run
     // was stopped either way.
@@ -919,6 +946,9 @@ export function handleInterrupt(options: InterruptOptions): Interrupt {
     signal: controller.signal,
     get stoppedBy() {
       return state.stoppedBy;
+    },
+    get forced() {
+      return state.forced;
     },
     stopped,
     // A key read in raw mode has no echo to erase.

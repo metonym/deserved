@@ -293,9 +293,21 @@ function distance(a: string, b: string): number {
   return d(a.length, b.length);
 }
 
+// Dashes aside and case folded, since `-V` is a typo of `-v` and the
+// dashes are shared by every flag.
+function shareLetter(a: string, b: string): boolean {
+  const letters = new Set(a.replace(/^-+/, "").toLowerCase());
+  for (const c of b.replace(/^-+/, "").toLowerCase()) {
+    if (letters.has(c)) return true;
+  }
+  return false;
+}
+
 // The real flag or command nearest a typo, for "did you mean --json?":
 // within a third of the input's length in edits, so a short typo still
-// finds its flag and a word that's merely long doesn't match.
+// finds its flag and a word that's merely long doesn't match. The two
+// names, dashes aside, share a letter, since one letter is one edit from
+// every other: `-x` isn't a typo of `-h`, though `-V` may be of `-v`.
 export function nearest(
   input: string,
   candidates: Iterable<string>,
@@ -305,7 +317,7 @@ export function nearest(
   let bestDistance = most + 1;
   for (const candidate of candidates) {
     const d = distance(input, candidate);
-    if (d < bestDistance) {
+    if (d < bestDistance && shareLetter(input, candidate)) {
       best = candidate;
       bestDistance = d;
     }
